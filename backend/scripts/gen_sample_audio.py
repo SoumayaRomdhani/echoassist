@@ -30,6 +30,7 @@ from src.providers.tts.base import TTSProvider
 _OUTPUT_SR = 16000  # microphone-like input rate for STT
 
 _CLIPS = {
+    # Consent gate (Sprint 1)
     "sample_consent.wav": "Yes, that's fine, you can continue.",
     "sample_decline.wav": "No, I'd rather not. Please don't continue.",
     "sample_answer.wav": (
@@ -37,6 +38,18 @@ _CLIPS = {
         "mostly building APIs with FastAPI and Postgres. "
         "I'm available to start within a month, and I'm comfortable working remotely."
     ),
+    # Full screening interview (Sprint 3) — one caller turn per clip, in order
+    "interview_question.wav": "Actually, before that — is this role fully remote?",
+    "interview_experience.wav": (
+        "Sure. I have about six years of professional software experience, mostly with Python."
+    ),
+    "interview_stack.wav": "My main stack is Python with FastAPI, and PostgreSQL for the database.",
+    "interview_availability.wav": "I could start in about three weeks.",
+    "interview_remote.wav": (
+        "Yes, I'm comfortable working remotely. I'm based in Tunis, in Central European Time."
+    ),
+    "interview_salary.wav": "I'm looking for around seventy-five thousand euros per year.",
+    "interview_done.wav": "No, that's all from me. Thank you.",
 }
 
 

@@ -23,9 +23,10 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from src.agent.consent import ConsentDecision, classify_consent
+from src.agent.dialogue import DialogueManager
 from src.agent.domain import DomainConfig
 from src.providers.llm.base import LLMProvider
 from src.providers.stt.base import STTProvider
@@ -70,6 +71,17 @@ class ConsentTurn:
     ended: bool           # the call must end (refused, or repeated ambiguity)
 
 
+@dataclass(slots=True)
+class InterviewTurn:
+    """Outcome of one interview turn (Sprint 3)."""
+
+    transcript: str
+    reply: str
+    audio: AudioChunk
+    ended: bool
+    citations: list[str] = field(default_factory=list)
+
+
 class VoicePipeline:
     """Stateful conversation pipeline for a single call."""
 
@@ -80,6 +92,7 @@ class VoicePipeline:
         tts: TTSProvider,
         domain: DomainConfig,
         *,
+        dialogue: DialogueManager | None = None,
         max_history_messages: int = 20,
         max_consent_attempts: int = 2,
     ) -> None:
@@ -87,6 +100,7 @@ class VoicePipeline:
         self._llm = llm
         self._tts = tts
         self._domain = domain
+        self._dialogue = dialogue
         self._max_history = max_history_messages
         self._max_consent_attempts = max_consent_attempts
         self._consent_attempts = 0
@@ -167,6 +181,29 @@ class VoicePipeline:
             timings.total_ms,
         )
         return TurnResult(transcript.text, reply, reply_audio, timings)
+
+    # --- interview (Sprint 3) ---------------------------------------------
+    async def begin_interview(self) -> tuple[str, AudioChunk]:
+        """Speak the interviewer's first question (after consent + greeting)."""
+        self._require_dialogue()
+        text = await self._dialogue.start()
+        return text, await self.speak(text)
+
+    async def interview_turn(self, audio) -> InterviewTurn:
+        """Process one interview utterance: transcribe -> dialogue decision -> speak."""
+        self._require_dialogue()
+        transcript = await self._stt.transcribe(audio)
+        turn = await self._dialogue.handle_turn(transcript.text)
+        audio_out = await self.speak(turn.text)
+        return InterviewTurn(transcript.text, turn.text, audio_out, turn.ended, turn.citations)
+
+    async def speak(self, text: str) -> AudioChunk:
+        """Synthesize agent speech (no conversation-history side effects)."""
+        return await self._tts.synthesize(text)
+
+    def _require_dialogue(self) -> None:
+        if self._dialogue is None:
+            raise RuntimeError("VoicePipeline was constructed without a DialogueManager")
 
     # --- internals ---------------------------------------------------------
     async def _say(self, text: str) -> AudioChunk:

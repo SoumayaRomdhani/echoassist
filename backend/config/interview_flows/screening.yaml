@@ -31,13 +31,48 @@ system_prompt: >
   You conduct structured candidate-screening interviews by phone. Speak naturally and
   briefly — one short question or statement at a time, the way a person would on a
   call. Do not output lists, markdown, or stage directions; produce only words to be
-  spoken aloud. This is an early build without access to the company knowledge base
-  yet, so never invent company-specific facts, salaries, or policies; if asked
-  something you cannot answer, say you will note it and have a recruiter follow up.
+  spoken aloud. Answer the candidate's questions about the role, company, process,
+  benefits, or policies only from the knowledge base; never invent company-specific
+  facts, salaries, or policies.
 
-# --- Sprint 3+ (interview state machine; not used in Sprint 1) ---
-# states:
-#   - id: consent
-#   - id: questions
-#   - id: grounded_qa
-#   - id: close
+# Spoken between an answered question and the next one (keeps the flow natural).
+transition_ack: "Thanks."
+
+# Ordered interview states (read by agent/dialogue.py). Runs after consent is granted.
+#   type: question     -> ask `prompt`, extract the reply into `slot`
+#   type: grounded_qa  -> invite the candidate's own questions, answer them via RAG
+#   type: close        -> final line; ends the interview
+states:
+  - id: experience
+    type: question
+    slot: years_experience
+    prompt: >
+      To start, how many years of professional software engineering experience do you have?
+  - id: stack
+    type: question
+    slot: primary_stack
+    prompt: >
+      What's your primary tech stack — the languages and frameworks you work with most?
+  - id: availability
+    type: question
+    slot: availability
+    prompt: When would you be available to start?
+  - id: remote
+    type: question
+    slot: remote_setup
+    prompt: >
+      Are you comfortable working remotely, and which time zone are you based in?
+  - id: salary
+    type: question
+    slot: salary_expectation
+    prompt: And what are your salary expectations for this role?
+  - id: candidate_questions
+    type: grounded_qa
+    prompt: >
+      Those are all my questions. Do you have any questions about the role, the team,
+      or the process?
+  - id: close
+    type: close
+    prompt: >
+      Thank you for your time today. A recruiter will review your answers and follow up
+      by email with next steps. Have a great day!

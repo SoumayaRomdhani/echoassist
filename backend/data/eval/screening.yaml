@@ -1,0 +1,24 @@
+# Retrieval gold set for the screening domain.
+# Each query lists the document(s) that should be retrieved to answer it.
+domain: screening
+queries:
+  - query: "How many years of experience does the backend engineer role require?"
+    relevant: [role_backend_engineer.md]
+  - query: "What is the salary range for the position?"
+    relevant: [compensation_and_benefits.md]
+  - query: "Can I work fully remotely, or do I have to come to the office?"
+    relevant: [remote_work_policy.md]
+  - query: "What are the steps in the interview process?"
+    relevant: [interview_process.md]
+  - query: "How many days of paid vacation do employees get?"
+    relevant: [compensation_and_benefits.md]
+  - query: "Where is ACTEEK headquartered?"
+    relevant: [company_overview.md]
+  - query: "Is the phone screening call recorded?"
+    relevant: [interview_process.md]
+  - query: "What time-zone overlap is expected for remote work?"
+    relevant: [remote_work_policy.md]
+  - query: "Which programming language and frameworks are required?"
+    relevant: [role_backend_engineer.md]
+  - query: "Is there a performance bonus?"
+    relevant: [compensation_and_benefits.md]

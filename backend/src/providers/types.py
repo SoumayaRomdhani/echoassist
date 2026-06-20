@@ -71,11 +71,16 @@ class Role(StrEnum):
 
 @dataclass(slots=True)
 class Message:
-    """A single conversation message."""
+    """A single conversation message.
+
+    - An ASSISTANT message may carry ``tool_calls`` when the model requested tools.
+    - A TOOL message carries the tool result in ``content`` plus ``tool_call_id`` /
+      ``name`` to correlate it with the call.
+    """
 
     role: Role
     content: str
-    # Set on TOOL-role messages to correlate a tool result with its call (Sprint 2+).
+    tool_calls: list[ToolCall] | None = None
     tool_call_id: str | None = None
     name: str | None = None
 

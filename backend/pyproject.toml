@@ -23,6 +23,10 @@ stt-whisper = ["faster-whisper>=1.0"]
 llm-gemini  = ["google-genai>=1.0"]
 llm-ollama  = ["ollama>=0.3"]
 tts-kokoro  = ["kokoro>=0.9"]
+# RAG core (Sprint 2): hybrid embeddings + reranker (FastEmbed) + vector DB (Qdrant).
+rag = ["qdrant-client>=1.12", "fastembed>=0.4"]
+# Conversation state (Sprint 3): Redis.
+state = ["redis>=5.0"]
 # Recommended Sprint 1 install (open-source STT/TTS + both LLM clients).
 # Default LLM is Ollama (needs the Ollama server + a pulled model); Gemini is the
 # easiest start with no GPU.
@@ -37,6 +41,9 @@ all = [
     "google-genai>=1.0",
     "ollama>=0.3",
     "kokoro>=0.9",
+    "qdrant-client>=1.12",
+    "fastembed>=0.4",
+    "redis>=5.0",
 ]
 dev = [
     "pytest>=8.0",
