@@ -1,0 +1,1 @@
+"""EchoAssist backend source package."""

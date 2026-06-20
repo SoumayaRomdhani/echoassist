@@ -1,0 +1,133 @@
+"""Setup doctor: verify the environment and each configured provider.
+
+    python scripts/check_setup.py          # fast checks (deps importable, config valid)
+    python scripts/check_setup.py --full   # also run a tiny TTS->STT->LLM smoke test
+
+Exit code is non-zero if any required check fails, so it doubles as a CI gate.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import importlib.util
+import shutil
+import sys
+
+from config.settings import (
+    LLMProviderName,
+    STTProviderName,
+    TTSProviderName,
+    build_llm,
+    build_stt,
+    build_tts,
+    get_settings,
+)
+from src.console import FAIL, OK, WARN, bold, dim, init_console
+
+_failed = False
+
+
+def report(status: str, label: str, detail: str = "") -> None:
+    global _failed
+    if status is FAIL:
+        _failed = True
+    print(f"  {status} {label}" + (f"  {dim(detail)}" if detail else ""))
+
+
+def _installed(name: str) -> bool:
+    # find_spec raises (not returns None) when a parent package is missing.
+    try:
+        return importlib.util.find_spec(name) is not None
+    except ModuleNotFoundError:
+        return False
+
+
+def check_environment() -> None:
+    print("\nEnvironment")
+    py = sys.version_info
+    ok = py >= (3, 11)
+    report(OK if ok else FAIL, "Python", f"{py.major}.{py.minor}.{py.micro} (need >=3.11)")
+    ffmpeg = shutil.which("ffmpeg")
+    report(OK if ffmpeg else WARN, "ffmpeg", ffmpeg or "not found — needed by telephonize.py")
+
+
+def check_config() -> None:
+    s = get_settings()
+    print("\nConfiguration")
+    report(OK, "settings loaded", f"domain={s.domain}")
+    report(OK, "STT provider", s.stt_provider.value)
+    report(OK, "LLM provider", s.llm_provider.value)
+    report(OK, "TTS provider", s.tts_provider.value)
+
+
+def check_dependencies() -> None:
+    s = get_settings()
+    print("\nProvider dependencies")
+    checks = [
+        ("faster_whisper", s.stt_provider is STTProviderName.whisper_local),
+        ("google.genai", s.llm_provider is LLMProviderName.gemini),
+        ("ollama", s.llm_provider is LLMProviderName.ollama),
+        ("kokoro", s.tts_provider is TTSProviderName.kokoro),
+    ]
+    for module, active in checks:
+        installed = _installed(module)
+        if active:
+            report(OK if installed else FAIL, module, "installed" if installed else "MISSING")
+        else:
+            report(OK if installed else WARN, module, "installed" if installed else "inactive")
+
+    if s.llm_provider is LLMProviderName.gemini and not s.gemini_api_key:
+        report(FAIL, "GEMINI_API_KEY", "not set — add it to backend/.env")
+
+
+async def check_smoke() -> None:
+    s = get_settings()
+    print("\nSmoke test (loads models — first run downloads weights)")
+
+    audio = None
+    try:
+        audio = await build_tts(s).synthesize("This is a setup test.")
+        detail = f"{audio.duration_s:.1f}s @ {audio.fmt.sample_rate}Hz"
+        report(OK if audio.data else FAIL, "TTS synthesize", detail)
+    except Exception as exc:  # noqa: BLE001
+        report(FAIL, "TTS synthesize", str(exc))
+
+    if audio is not None:
+        try:
+            transcript = await build_stt(s).transcribe(audio)
+            report(OK if transcript.text else WARN, "STT transcribe", f'"{transcript.text}"')
+        except Exception as exc:  # noqa: BLE001
+            report(FAIL, "STT transcribe", str(exc))
+
+    try:
+        from src.providers.types import Message, Role
+
+        resp = await build_llm(s).chat([Message(Role.USER, "Reply with one word: ready")])
+        report(OK if resp.text else FAIL, "LLM chat", f'"{resp.text}"')
+    except Exception as exc:  # noqa: BLE001
+        report(FAIL, "LLM chat", str(exc))
+
+
+async def main() -> None:
+    parser = argparse.ArgumentParser(description="EchoAssist setup doctor.")
+    parser.add_argument("--full", action="store_true", help="Run a TTS->STT->LLM smoke test.")
+    args = parser.parse_args()
+
+    init_console()
+    print(bold("EchoAssist — setup doctor"))
+    check_environment()
+    check_config()
+    check_dependencies()
+    if args.full:
+        await check_smoke()
+
+    print()
+    if _failed:
+        print(f"{FAIL} Some required checks failed. See above.")
+        sys.exit(1)
+    print(f"{OK} All required checks passed.")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
