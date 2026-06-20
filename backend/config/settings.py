@@ -26,9 +26,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
 if TYPE_CHECKING:  # avoid importing provider modules (and their heavy deps) at module load
+    from src.agent.state import StateStore
     from src.providers.llm.base import LLMProvider
     from src.providers.stt.base import STTProvider
     from src.providers.tts.base import TTSProvider
+    from src.rag.embeddings import HybridEmbedder
+    from src.rag.reranker import Reranker
+    from src.rag.retriever import Retriever
+    from src.rag.vectorstore import VectorStore
 
 # Anchor all paths to the backend directory so behaviour is independent of CWD.
 BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -51,6 +56,22 @@ class TTSProviderName(StrEnum):
     kokoro = "kokoro"
     cartesia = "cartesia"
     elevenlabs = "elevenlabs"
+
+
+class EmbeddingsProviderName(StrEnum):
+    fastembed = "fastembed"
+    bge_m3 = "bge_m3"
+
+
+class RerankerProviderName(StrEnum):
+    fastembed = "fastembed"
+    bge = "bge"
+    none = "none"
+
+
+class StateBackendName(StrEnum):
+    redis = "redis"
+    memory = "memory"
 
 
 class Settings(BaseSettings):
@@ -90,6 +111,24 @@ class Settings(BaseSettings):
     kokoro_lang_code: str = "a"
     kokoro_voice: str = "af_heart"
     kokoro_speed: float = 1.0
+
+    # --- RAG: embeddings / reranker / vector store (Sprint 2) ---
+    embeddings_provider: EmbeddingsProviderName = EmbeddingsProviderName.fastembed
+    reranker_provider: RerankerProviderName = RerankerProviderName.fastembed
+    fastembed_dense_model: str = "BAAI/bge-small-en-v1.5"
+    fastembed_sparse_model: str = "Qdrant/bm25"
+    fastembed_rerank_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
+    qdrant_url: str = "http://localhost:6333"
+    rag_top_k: int = 6          # chunks returned after rerank
+    rag_candidates: int = 20    # candidates per modality before fusion/rerank
+    rrf_k: int = 60             # Reciprocal Rank Fusion constant
+    chunk_size: int = 1200
+    chunk_overlap: int = 150
+
+    # --- Conversation state (Sprint 3) ---
+    state_backend: StateBackendName = StateBackendName.redis
+    redis_url: str = "redis://localhost:6379"
+    redis_key_prefix: str = "echoassist:call:"
 
     # --- Generation / misc ---
     llm_temperature: float = 0.3
@@ -167,3 +206,71 @@ def build_tts(settings: Settings | None = None) -> TTSProvider:
             speed=settings.kokoro_speed,
         )
     raise NotImplementedError(f"TTS provider not yet implemented: {settings.tts_provider.value}")
+
+
+# --- RAG factory ----------------------------------------------------------- #
+def build_embedder(settings: Settings | None = None) -> HybridEmbedder:
+    settings = settings or get_settings()
+    if settings.embeddings_provider is EmbeddingsProviderName.fastembed:
+        from src.rag.embeddings import FastEmbedHybrid
+
+        return FastEmbedHybrid(
+            dense_model=settings.fastembed_dense_model,
+            sparse_model=settings.fastembed_sparse_model,
+        )
+    raise NotImplementedError(
+        f"Embeddings provider not yet implemented: {settings.embeddings_provider.value}"
+    )
+
+
+def build_reranker(settings: Settings | None = None) -> Reranker:
+    settings = settings or get_settings()
+    if settings.reranker_provider is RerankerProviderName.fastembed:
+        from src.rag.reranker import FastEmbedReranker
+
+        return FastEmbedReranker(model=settings.fastembed_rerank_model)
+    if settings.reranker_provider is RerankerProviderName.none:
+        from src.rag.reranker import NoOpReranker
+
+        return NoOpReranker()
+    raise NotImplementedError(
+        f"Reranker provider not yet implemented: {settings.reranker_provider.value}"
+    )
+
+
+def build_vector_store(
+    settings: Settings | None = None, *, domain: str | None = None
+) -> VectorStore:
+    settings = settings or get_settings()
+    from src.rag.vectorstore import QdrantVectorStore
+
+    # QDRANT_URL=local -> embedded on-disk Qdrant (no server); otherwise an HTTP URL.
+    location = settings.qdrant_url
+    if location == "local":
+        location = str(settings.data_dir / "qdrant_local")
+    return QdrantVectorStore(location=location, collection=domain or settings.domain)
+
+
+def build_retriever(settings: Settings | None = None, *, domain: str | None = None) -> Retriever:
+    settings = settings or get_settings()
+    from src.rag.retriever import Retriever
+
+    return Retriever(
+        build_embedder(settings),
+        build_vector_store(settings, domain=domain),
+        build_reranker(settings),
+        top_k=settings.rag_top_k,
+        candidates=settings.rag_candidates,
+        rrf_k=settings.rrf_k,
+    )
+
+
+def build_state_store(settings: Settings | None = None) -> StateStore:
+    settings = settings or get_settings()
+    if settings.state_backend is StateBackendName.redis:
+        from src.agent.state import RedisStateStore
+
+        return RedisStateStore(url=settings.redis_url, key_prefix=settings.redis_key_prefix)
+    from src.agent.state import InMemoryStateStore
+
+    return InMemoryStateStore()

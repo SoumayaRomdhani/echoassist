@@ -1,0 +1,139 @@
+"""Run a full screening interview end-to-end from replayed audio.
+
+This is the Sprint 3 Definition of Done: disclosure -> consent -> the agent
+leads the structured interview (filling slots), answers the caller's own
+questions from the knowledge base, and closes — all from replayed WAVs.
+
+    python scripts/run_interview.py            # uses the generated interview clips
+    python scripts/run_interview.py --no-play --no-realtime
+
+Requires Qdrant + Redis running and the domain ingested:
+    docker compose -f ../docker-compose.yml up -d qdrant redis
+    python scripts/ingest_docs.py
+    python scripts/gen_sample_audio.py
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import logging
+import uuid
+from pathlib import Path
+
+from config.settings import (
+    build_llm,
+    build_retriever,
+    build_state_store,
+    build_stt,
+    build_tts,
+    get_settings,
+)
+from src.agent.dialogue import DialogueManager, LLMTurnClassifier
+from src.agent.domain import load_domain_config
+from src.agent.grounding import GroundedResponder
+from src.agent.orchestrator import VoicePipeline
+from src.agent.state import ConversationState
+from src.audio.io import stream_wav
+from src.audio.playback import play
+from src.console import bold, dim, init_console
+from src.log import setup_logging
+
+log = logging.getLogger("echoassist.interview")
+
+# Caller turns, in order: a mid-question detour (RAG), then the five answers, then "done".
+_DEFAULT_ANSWERS = [
+    "interview_question.wav",
+    "interview_experience.wav",
+    "interview_stack.wav",
+    "interview_availability.wav",
+    "interview_remote.wav",
+    "interview_salary.wav",
+    "interview_done.wav",
+]
+
+
+def _parse_args(data_dir: Path) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run a full screening interview from audio.")
+    parser.add_argument("--consent", type=Path, default=data_dir / "sample_consent.wav")
+    parser.add_argument("--no-play", action="store_true", help="Do not play audio (save only).")
+    parser.add_argument("--no-realtime", action="store_true", help="Feed audio without pacing.")
+    return parser.parse_args()
+
+
+async def _emit(label: str, text: str, audio, *, play_audio: bool) -> None:
+    print(f"\n{bold(label)} {text}")
+    if play_audio:
+        await play(audio)
+
+
+async def main() -> None:
+    settings = get_settings()
+    init_console()
+    setup_logging(settings.log_level)
+    data_dir = settings.data_dir / "test_audio"
+    args = _parse_args(data_dir)
+
+    answer_paths = [data_dir / name for name in _DEFAULT_ANSWERS]
+    for path in (args.consent, *answer_paths):
+        if not path.exists():
+            raise SystemExit(f"Audio not found: {path}\nRun: python scripts/gen_sample_audio.py")
+
+    domain = load_domain_config(settings.domain, settings.config_dir)
+    llm = build_llm(settings)
+    retriever = build_retriever(settings)
+    store = build_state_store(settings)
+    state = ConversationState(call_id=uuid.uuid4().hex)
+    dialogue = DialogueManager(
+        classifier=LLMTurnClassifier(llm),
+        responder=GroundedResponder(llm, retriever, system_prompt=domain.system_prompt),
+        domain=domain,
+        state=state,
+        store=store,
+    )
+    pipeline = VoicePipeline(
+        build_stt(settings), llm, build_tts(settings), domain, dialogue=dialogue
+    )
+
+    play_audio = not args.no_play
+    realtime = not args.no_realtime
+    log.info("call_id=%s | state backend=%s", state.call_id, settings.state_backend.value)
+
+    try:
+        disclosure_text, disclosure_audio = await pipeline.speak_disclosure()
+        await _emit("AGENT (disclosure):", disclosure_text, disclosure_audio, play_audio=play_audio)
+
+        consent = await pipeline.handle_consent(stream_wav(args.consent, realtime=realtime))
+        tag = dim(f"[{consent.decision.value}]")
+        print(f"\n{bold('CALLER:')} {consent.transcript}  {tag}")
+        await _emit("AGENT:", consent.reply, consent.audio, play_audio=play_audio)
+        if not consent.proceed:
+            print(dim("\nCall ended — consent not given."))
+            return
+        state.consent_granted = True
+
+        question_text, question_audio = await pipeline.begin_interview()
+        await _emit("AGENT (question):", question_text, question_audio, play_audio=play_audio)
+
+        for path in answer_paths:
+            turn = await pipeline.interview_turn(stream_wav(path, realtime=realtime))
+            print(f"\n{bold('CALLER:')} {turn.transcript}")
+            label = "AGENT:" if not turn.citations else f"AGENT {dim(turn.citations)}:"
+            await _emit(label, turn.reply, turn.audio, play_audio=play_audio)
+            if turn.ended:
+                break
+
+        print(bold("\n\n--- Interview complete ---"))
+        print(f"{bold('Filled slots:')}")
+        for slot, value in state.slots.items():
+            print(f"  {slot}: {value}")
+        print(dim(f"\n{len(state.transcript)} turns recorded; "
+                  f"{len(state.query_history)} candidate question(s); state saved to "
+                  f"{settings.state_backend.value}."))
+    finally:
+        await pipeline.aclose()
+        await store.aclose()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

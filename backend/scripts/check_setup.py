@@ -16,6 +16,7 @@ import sys
 
 from config.settings import (
     LLMProviderName,
+    StateBackendName,
     STTProviderName,
     TTSProviderName,
     build_llm,
@@ -81,6 +82,40 @@ def check_dependencies() -> None:
         report(FAIL, "GEMINI_API_KEY", "not set — add it to backend/.env")
 
 
+def check_rag() -> None:
+    s = get_settings()
+    print("\nRAG (Sprint 2)")
+    for module in ("fastembed", "qdrant_client"):
+        installed = _installed(module)
+        report(OK if installed else WARN, module, "installed" if installed else "not installed")
+
+    if _installed("qdrant_client"):
+        try:
+            from qdrant_client import QdrantClient
+
+            collections = QdrantClient(url=s.qdrant_url, timeout=3).get_collections().collections
+            report(OK, "Qdrant", f"{s.qdrant_url} ({len(collections)} collections)")
+        except Exception:  # noqa: BLE001
+            report(WARN, "Qdrant", "unreachable — run: docker compose up -d qdrant")
+
+
+def check_state() -> None:
+    s = get_settings()
+    if s.state_backend is not StateBackendName.redis:
+        return
+    print("\nState (Sprint 3)")
+    installed = _installed("redis")
+    report(OK if installed else WARN, "redis", "installed" if installed else "not installed")
+    if installed:
+        try:
+            import redis
+
+            redis.from_url(s.redis_url, socket_connect_timeout=3).ping()
+            report(OK, "Redis", s.redis_url)
+        except Exception:  # noqa: BLE001
+            report(WARN, "Redis", "unreachable — run: docker compose up -d redis")
+
+
 async def check_smoke() -> None:
     s = get_settings()
     print("\nSmoke test (loads models — first run downloads weights)")
@@ -119,6 +154,8 @@ async def main() -> None:
     check_environment()
     check_config()
     check_dependencies()
+    check_rag()
+    check_state()
     if args.full:
         await check_smoke()
 
