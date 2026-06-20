@@ -132,6 +132,7 @@ class DialogueManager:
         domain: DomainConfig,
         state: ConversationState,
         store: StateStore,
+        max_question_retries: int = 2,
     ) -> None:
         self._classifier = classifier
         self._responder = responder
@@ -139,6 +140,7 @@ class DialogueManager:
         self._ack = str(domain.flow.get("transition_ack") or "").strip()
         self._state = state
         self._store = store
+        self._max_question_retries = max_question_retries
 
     @property
     def state(self) -> ConversationState:
@@ -152,6 +154,11 @@ class DialogueManager:
     def _current(self) -> State | None:
         index = self._state.state_index
         return self._states[index] if 0 <= index < len(self._states) else None
+
+    async def record_consent(self) -> None:
+        """Mark consent granted in the call state and persist it."""
+        self._state.consent_granted = True
+        await self._store.save(self._state)
 
     async def start(self) -> str:
         """Return (and record) the interviewer's first line — the first question."""
@@ -195,8 +202,18 @@ class DialogueManager:
         if decision.intent is TurnIntent.ANSWER:
             if state.slot:
                 self._state.slots[state.slot] = decision.answer_value or transcript
+            self._state.question_attempts.pop(state.id, None)
             return self._advance(prepend_ack=True)
-        # done / unclear: ask the same question again.
+
+        # done / unclear: re-ask, but skip the question after too many failed attempts
+        # so a non-answering caller can't loop the interview forever.
+        attempts = self._state.question_attempts.get(state.id, 0) + 1
+        self._state.question_attempts[state.id] = attempts
+        if attempts >= self._max_question_retries:
+            if state.slot:
+                self._state.slots[state.slot] = ""  # leave unanswered
+            log.info("skipping question '%s' after %d unclear attempts", state.id, attempts)
+            return self._advance(prepend_ack=False)
         return DialogueTurn(text=f"Sorry — {state.prompt}", ended=False, intent=decision.intent)
 
     async def _handle_grounded_qa(self, transcript: str, decision: TurnDecision) -> DialogueTurn:

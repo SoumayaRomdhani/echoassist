@@ -25,6 +25,7 @@ class ConversationState:
     slots: dict[str, str] = field(default_factory=dict)
     transcript: list[dict] = field(default_factory=list)   # {"role": ..., "text": ...}
     query_history: list[str] = field(default_factory=list)
+    question_attempts: dict[str, int] = field(default_factory=dict)  # per-question retry counter
 
     def add_turn(self, role: str, text: str) -> None:
         self.transcript.append({"role": role, "text": text})

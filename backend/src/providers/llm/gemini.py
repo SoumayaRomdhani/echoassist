@@ -11,7 +11,7 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from src.providers.errors import ProviderConfigError
+from src.providers.errors import ProviderConfigError, ProviderError, ProviderQuotaError
 from src.providers.llm.base import LLMProvider
 from src.providers.types import LLMResponse, Message, Role, ToolCall, ToolSpec
 
@@ -19,6 +19,25 @@ if TYPE_CHECKING:
     from google import genai
 
 log = logging.getLogger("echoassist.llm.gemini")
+
+_QUOTA_MESSAGE = (
+    "Gemini rate limit / quota exceeded. Wait ~60s and retry, or switch to a local "
+    "model with LLM_PROVIDER=ollama in backend/.env."
+)
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return getattr(exc, "code", None) == 429 or "resource_exhausted" in text or "quota" in text
+
+
+def _to_provider_error(exc: Exception) -> ProviderError:
+    """Map a Gemini API error to a clean ProviderError (no raw traceback for the user)."""
+    if _is_quota_error(exc):
+        return ProviderQuotaError(_QUOTA_MESSAGE)
+    code = getattr(exc, "code", None)
+    message = (getattr(exc, "message", None) or str(exc))[:200]
+    return ProviderError(f"Gemini API error ({code}): {message} — please retry in a moment.")
 
 
 def _to_gemini_schema(schema: dict) -> dict:
@@ -126,14 +145,18 @@ class GeminiLLM(LLMProvider):
     async def chat(
         self, messages: list[Message], tools: list[ToolSpec] | None = None
     ) -> LLMResponse:
+        from google.genai import errors as genai_errors
         from google.genai import types
 
         system_instruction, contents = _build_contents(messages, types)
-        response = await self._client.aio.models.generate_content(
-            model=self._model,
-            contents=contents,
-            config=self._config(types, system_instruction, tools),
-        )
+        try:
+            response = await self._client.aio.models.generate_content(
+                model=self._model,
+                contents=contents,
+                config=self._config(types, system_instruction, tools),
+            )
+        except genai_errors.APIError as exc:
+            raise _to_provider_error(exc) from exc
         tool_calls = [
             ToolCall(
                 id=getattr(fc, "id", None) or f"{fc.name}-{i}",

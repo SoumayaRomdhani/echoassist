@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 
 from src.providers.llm.base import LLMProvider
@@ -34,6 +35,21 @@ SEARCH_TOOL = ToolSpec(
         "required": ["query"],
     },
 )
+
+_CITATION_PATTERN = re.compile(r"\s*\[[^\]]*\]")
+
+
+def _spoken(text: str) -> str:
+    """Strip bracketed source citations so the spoken answer is natural prose.
+
+    The model still emits ``[source]`` (so we can capture the citation in metadata),
+    but the caller hears a clean sentence — the filename belongs in the dashboard,
+    not the audio.
+    """
+    stripped = _CITATION_PATTERN.sub("", text)
+    stripped = re.sub(r"\s+([.,;:!?])", r"\1", stripped)
+    return re.sub(r"\s{2,}", " ", stripped).strip()
+
 
 _GROUNDING_RULES = (
     "Answer using ONLY the knowledge base. To find information, call the "
@@ -86,12 +102,7 @@ class GroundedResponder:
         for _ in range(self._max_tool_iters):
             response = await self._llm.chat(messages, tools=[SEARCH_TOOL])
             if not response.tool_calls:
-                return GroundedAnswer(
-                    text=response.text,
-                    citations=self._citations(response.text, retrieved),
-                    retrieved=retrieved,
-                    tool_calls=tool_calls,
-                )
+                return self._finalize(response.text, retrieved, tool_calls)
 
             messages.append(Message(Role.ASSISTANT, response.text, tool_calls=response.tool_calls))
             for call in response.tool_calls:
@@ -111,9 +122,15 @@ class GroundedResponder:
 
         # Tool budget exhausted: ask once more without tools to force a final answer.
         final = await self._llm.chat(messages)
+        return self._finalize(final.text, retrieved, tool_calls)
+
+    def _finalize(
+        self, raw_text: str, retrieved: list[ScoredChunk], tool_calls: int
+    ) -> GroundedAnswer:
+        # Citations are parsed from the raw model text; the spoken text has them stripped.
         return GroundedAnswer(
-            text=final.text,
-            citations=self._citations(final.text, retrieved),
+            text=_spoken(raw_text),
+            citations=self._citations(raw_text, retrieved),
             retrieved=retrieved,
             tool_calls=tool_calls,
         )

@@ -54,7 +54,9 @@ async def test_tool_loop_retrieves_then_answers_with_citation() -> None:
 
     assert retriever.queries == ["process"]
     assert answer.tool_calls == 1
-    assert answer.citations == ["interview_process.md"]
+    assert answer.citations == ["interview_process.md"]   # citation kept in metadata
+    assert answer.text == "The process has four stages."  # ...but stripped from spoken text
+    assert "[" not in answer.text
     assert answer.retrieved == [chunk]
     assert llm.tools_offered[0] is True  # tools were offered to the model
 
@@ -73,3 +75,11 @@ def test_search_tool_schema_is_well_formed() -> None:
     assert SEARCH_TOOL.name == "search_knowledge_base"
     assert SEARCH_TOOL.parameters["required"] == ["query"]
     assert SEARCH_TOOL.parameters["properties"]["query"]["type"] == "string"
+
+
+def test_spoken_strips_citations_and_tidies_punctuation() -> None:
+    from src.agent.grounding import _spoken
+
+    assert _spoken("It is fully remote [remote_work_policy.md].") == "It is fully remote."
+    assert _spoken("Pay is 65k [a.md] to 85k [b.md].") == "Pay is 65k to 85k."
+    assert "[" not in _spoken("See [x.md] for details [y.md]")

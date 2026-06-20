@@ -129,6 +129,37 @@ async def test_full_flow_runs_to_close() -> None:
     assert mgr.state.slots == {"years_experience": "6", "primary_stack": "Python/FastAPI"}
 
 
+@pytest.mark.asyncio
+async def test_question_skipped_after_max_unclear_attempts() -> None:
+    decisions = [TurnDecision(TurnIntent.UNCLEAR), TurnDecision(TurnIntent.UNCLEAR)]
+    mgr = _manager(decisions, _responder())
+    await mgr.start()
+
+    first = await mgr.handle_turn("uh, what?")
+    assert first.text.startswith("Sorry —")   # attempt 1: re-ask
+    assert mgr.state.slots == {}
+
+    second = await mgr.handle_turn("hmm")      # attempt 2 (max): skip + advance
+    assert "main tech stack" in second.text
+    assert second.ended is False
+    assert mgr.state.slots["years_experience"] == ""  # left unanswered
+
+
+@pytest.mark.asyncio
+async def test_record_consent_persists_to_store() -> None:
+    state = ConversationState(call_id="c1")
+    store = InMemoryStateStore()
+    mgr = DialogueManager(
+        classifier=FakeClassifier([]), responder=_responder(),
+        domain=_domain(), state=state, store=store,
+    )
+    await mgr.record_consent()
+
+    assert state.consent_granted is True
+    loaded = await store.load("c1")
+    assert loaded is not None and loaded.consent_granted is True
+
+
 class _JsonLLM(LLMProvider):
     def __init__(self, text: str) -> None:
         self._text = text
