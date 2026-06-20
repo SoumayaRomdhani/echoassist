@@ -1,0 +1,43 @@
+# Domain: talent-acquisition / candidate screening (primary vertical, v1).
+# Sprint 1 uses `disclosure`, `greeting`, and `system_prompt`. The `states`
+# section is the Sprint 3 interview state machine and is read by agent/dialogue.py.
+domain: screening
+language: en
+
+# Spoken at the very start of every call (ARCHITECTURE.md §10 — AI disclosure + consent).
+disclosure: >
+  Hi, this is an automated A I voice assistant calling on behalf of ACTEEK about your
+  job application. I'm an artificial intelligence, not a human, and this call may be
+  recorded for quality and record keeping. Is it okay to continue?
+
+# Spoken ONLY after the caller explicitly consents (see consent gate in orchestrator).
+greeting: >
+  Great, thank you. This will only take a few minutes, and you can ask me to repeat
+  or skip a question at any time.
+
+# Spoken when the caller's answer to the consent question is unclear (re-ask once).
+consent_reprompt: >
+  Sorry, I didn't catch a clear yes or no. Do you consent to continue with this
+  recorded call? Please say yes or no.
+
+# Spoken when the caller declines (or stays unclear after re-asking); the call then ends.
+consent_decline: >
+  That's completely fine. I won't continue without your consent. Thank you for your
+  time, and have a good day. Goodbye.
+
+# System prompt that grounds the model's behaviour for this domain.
+system_prompt: >
+  You are EchoAssist, a professional and concise A I screening assistant for ACTEEK.
+  You conduct structured candidate-screening interviews by phone. Speak naturally and
+  briefly — one short question or statement at a time, the way a person would on a
+  call. Do not output lists, markdown, or stage directions; produce only words to be
+  spoken aloud. This is an early build without access to the company knowledge base
+  yet, so never invent company-specific facts, salaries, or policies; if asked
+  something you cannot answer, say you will note it and have a recruiter follow up.
+
+# --- Sprint 3+ (interview state machine; not used in Sprint 1) ---
+# states:
+#   - id: consent
+#   - id: questions
+#   - id: grounded_qa
+#   - id: close

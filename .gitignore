@@ -1,0 +1,41 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- Environment & secrets ---
+.env
+*.env
+!.env.example
+
+# --- Models / large artifacts (downloaded at runtime) ---
+*.bin
+*.pt
+*.onnx
+backend/.cache/
+.cache/
+
+# --- Generated audio (keep .gitkeep) ---
+backend/data/test_audio/*
+!backend/data/test_audio/.gitkeep
+backend/data/docs/**/*
+!backend/data/docs/**/.gitkeep
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# --- Node (frontend, sprint 7) ---
+node_modules/
+frontend/dist/

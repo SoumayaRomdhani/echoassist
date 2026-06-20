@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Write-Output \"=== Python ===\"; try { python --version } catch { \"python: not found\" }; try { py --version } catch {}; Write-Output \"=== pip/uv ===\"; try { \\(Get-Command uv -ErrorAction Stop\\).Source } catch { \"uv: not found\" }; try { python -m pip --version } catch {}; Write-Output \"=== ffmpeg ===\"; try { \\(Get-Command ffmpeg -ErrorAction Stop\\).Source } catch { \"ffmpeg: not found\" }; Write-Output \"=== git ===\"; try { git --version } catch { \"git: not found\" }; Write-Output \"=== node ===\"; try { node --version } catch { \"node: not found\" }; try { \\(Get-Command pnpm -ErrorAction Stop\\).Source } catch { \"pnpm: not found\" }; Write-Output \"=== docker ===\"; try { docker --version } catch { \"docker: not found\" }; Write-Output \"=== ollama ===\"; try { \\(Get-Command ollama -ErrorAction Stop\\).Source } catch { \"ollama: not found\" })",
+      "PowerShell(& \"C:\\\\Users\\\\souma\\\\OneDrive\\\\Bureau\\\\echo\\\\backend\\\\.venv\\\\Scripts\\\\python.exe\" -m pip install -e \"C:\\\\Users\\\\souma\\\\OneDrive\\\\Bureau\\\\echo\\\\backend[dev]\" 2>&1)",
+      "PowerShell(Set-Location \"C:\\\\Users\\\\souma\\\\OneDrive\\\\Bureau\\\\echo\\\\backend\"; & \".venv\\\\Scripts\\\\python.exe\" \"scripts\\\\check_setup.py\"; Write-Output \"\\(exit $LASTEXITCODE — non-zero expected: heavy deps not installed yet\\)\")",
+      "PowerShell($p = Get-ChildItem -Path \"$env:LOCALAPPDATA\\\\Microsoft\\\\WinGet\\\\Packages\" -Recurse -Filter ffmpeg.exe -ErrorAction SilentlyContinue | Select-Object -First 1; if \\($p\\) { Write-Output $p.FullName; & $p.FullName -version 2>&1 | Select-Object -First 1 } else { Write-Output \"ffmpeg.exe not found under WinGet packages\" })"
+    ]
+  }
+}

@@ -1,0 +1,64 @@
+[project]
+name = "echoassist-backend"
+version = "0.1.0"
+description = "EchoAssist — provider-agnostic, multi-domain autonomous voice agent (ACTEEK Agent Marketplace)."
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+
+# Always-needed runtime deps (config, audio I/O, the speaking loop).
+dependencies = [
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "pyyaml>=6.0",
+    "numpy>=1.26",
+    "soundfile>=0.12",
+    "sounddevice>=0.4.6",
+    "soxr>=0.5",
+]
+
+# Provider-specific deps are optional extras so you only install the backends
+# you actually use. Switching provider = changing an env var + installing its extra.
+[project.optional-dependencies]
+stt-whisper = ["faster-whisper>=1.0"]
+llm-gemini  = ["google-genai>=1.0"]
+llm-ollama  = ["ollama>=0.3"]
+tts-kokoro  = ["kokoro>=0.9"]
+# Recommended Sprint 1 install (open-source STT/TTS + both LLM clients).
+# Default LLM is Ollama (needs the Ollama server + a pulled model); Gemini is the
+# easiest start with no GPU.
+sprint1 = [
+    "faster-whisper>=1.0",
+    "ollama>=0.3",
+    "google-genai>=1.0",
+    "kokoro>=0.9",
+]
+all = [
+    "faster-whisper>=1.0",
+    "google-genai>=1.0",
+    "ollama>=0.3",
+    "kokoro>=0.9",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+]
+
+# Install `config` and `src` as editable packages so scripts/tests import them
+# from anywhere without sys.path hacks. `scripts` and `tests` are intentionally
+# excluded (run, not imported).
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["config*", "src*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
+testpaths = ["tests"]
