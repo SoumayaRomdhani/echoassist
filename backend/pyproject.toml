@@ -24,7 +24,9 @@ llm-gemini  = ["google-genai>=1.0"]
 llm-ollama  = ["ollama>=0.3"]
 tts-kokoro  = ["kokoro>=0.9"]
 # RAG core (Sprint 2): hybrid embeddings + reranker (FastEmbed) + vector DB (Qdrant).
-rag = ["qdrant-client>=1.12", "fastembed>=0.4"]
+# fastembed is PINNED: model pooling/results can change between minor versions
+# (e.g. CLS vs mean pooling), so reproducibility requires an exact version.
+rag = ["qdrant-client>=1.12", "fastembed==0.8.0"]
 # Conversation state (Sprint 3): Redis.
 state = ["redis>=5.0"]
 # Recommended Sprint 1 install (open-source STT/TTS + both LLM clients).
@@ -42,7 +44,7 @@ all = [
     "ollama>=0.3",
     "kokoro>=0.9",
     "qdrant-client>=1.12",
-    "fastembed>=0.4",
+    "fastembed==0.8.0",
     "redis>=5.0",
 ]
 dev = [

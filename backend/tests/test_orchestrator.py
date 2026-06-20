@@ -145,3 +145,37 @@ async def test_run_turn_before_consent_is_rejected() -> None:
     await pipeline.speak_disclosure()
     with pytest.raises(RuntimeError):
         await pipeline.run_turn(_audio())
+
+
+@pytest.mark.asyncio
+async def test_interview_methods_require_consent() -> None:
+    pipeline, _ = _pipeline("anything")
+    await pipeline.speak_disclosure()
+    with pytest.raises(RuntimeError, match="consent"):
+        await pipeline.begin_interview()
+    with pytest.raises(RuntimeError, match="consent"):
+        await pipeline.interview_turn(_audio())
+
+
+class _RecordingDialogue:
+    """Minimal dialogue stand-in that records whether consent was persisted."""
+
+    def __init__(self) -> None:
+        self.consent_recorded = False
+
+    async def record_consent(self) -> None:
+        self.consent_recorded = True
+
+
+@pytest.mark.asyncio
+async def test_consent_acceptance_is_persisted_by_the_pipeline() -> None:
+    dialogue = _RecordingDialogue()
+    pipeline = VoicePipeline(
+        FakeSTT("yes, that's fine"), FakeLLM(), FakeTTS(), _domain(), dialogue=dialogue
+    )
+    await pipeline.speak_disclosure()
+    consent = await pipeline.handle_consent(_audio())
+
+    assert consent.decision is ConsentDecision.ACCEPTED
+    assert pipeline.consent_granted is True
+    assert dialogue.consent_recorded is True   # pipeline persisted it, not the script

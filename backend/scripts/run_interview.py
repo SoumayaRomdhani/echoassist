@@ -36,8 +36,9 @@ from src.agent.orchestrator import VoicePipeline
 from src.agent.state import ConversationState
 from src.audio.io import stream_wav
 from src.audio.playback import play
-from src.console import bold, dim, init_console
+from src.console import FAIL, bold, dim, init_console
 from src.log import setup_logging
+from src.providers.errors import ProviderError
 
 log = logging.getLogger("echoassist.interview")
 
@@ -110,7 +111,7 @@ async def main() -> None:
         if not consent.proceed:
             print(dim("\nCall ended — consent not given."))
             return
-        state.consent_granted = True
+        # consent_granted is persisted to the call state by the pipeline (handle_consent).
 
         question_text, question_audio = await pipeline.begin_interview()
         await _emit("AGENT (question):", question_text, question_audio, play_audio=play_audio)
@@ -136,4 +137,7 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except ProviderError as exc:
+        raise SystemExit(f"{FAIL} {exc}") from exc

@@ -1,7 +1,10 @@
-# Retrieval gold set for the screening domain.
-# Each query lists the document(s) that should be retrieved to answer it.
+# Retrieval gold set for the screening domain (bilingual KB: EN + FR docs).
+# Each query maps to its same-language source document — we test that a query
+# retrieves the correct document in its own language (the other-language version
+# also answers it, but same-language retrieval is the precision we want).
 domain: screening
 queries:
+  # --- English ---
   - query: "How many years of experience does the backend engineer role require?"
     relevant: [role_backend_engineer.md]
   - query: "What is the salary range for the position?"
@@ -22,3 +25,20 @@ queries:
     relevant: [role_backend_engineer.md]
   - query: "Is there a performance bonus?"
     relevant: [compensation_and_benefits.md]
+  # --- French (-> French documents) ---
+  - query: "Quelle est la fourchette de salaire pour ce poste ?"
+    relevant: [remuneration_avantages_fr.md]
+  - query: "Est-ce que je peux télétravailler entièrement ?"
+    relevant: [politique_teletravail_fr.md]
+  - query: "Combien d'années d'expérience sont demandées pour ce poste ?"
+    relevant: [poste_ingenieur_backend_fr.md]
+  - query: "Quelles sont les étapes du processus de recrutement ?"
+    relevant: [processus_entretien_fr.md]
+  - query: "Où se trouve le siège social d'ACTEEK ?"
+    relevant: [apercu_entreprise_fr.md]
+  - query: "Y a-t-il une prime de performance ?"
+    relevant: [remuneration_avantages_fr.md]
+  - query: "Combien de jours de congés payés par an ?"
+    relevant: [remuneration_avantages_fr.md]
+  - query: "Quel chevauchement horaire est attendu en télétravail ?"
+    relevant: [politique_teletravail_fr.md]

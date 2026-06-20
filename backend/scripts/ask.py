@@ -15,8 +15,9 @@ import asyncio
 from config.settings import build_llm, build_retriever, get_settings
 from src.agent.domain import load_domain_config
 from src.agent.grounding import GroundedResponder
-from src.console import bold, dim, init_console
+from src.console import FAIL, bold, dim, init_console
 from src.log import setup_logging
+from src.providers.errors import ProviderError
 
 
 async def main() -> None:
@@ -45,4 +46,7 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except ProviderError as exc:
+        raise SystemExit(f"{FAIL} {exc}") from exc

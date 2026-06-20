@@ -14,6 +14,7 @@ doctor) does not pull heavy ML dependencies into its import path.
 from __future__ import annotations
 
 import os
+import warnings
 from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
@@ -24,6 +25,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Quiet a noisy multi-line Hugging Face warning on Windows (no symlink support).
 # Set here because settings is imported before any model library loads.
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+# FastEmbed pooling notice — we pin fastembed (pyproject) so behaviour is fixed.
+warnings.filterwarnings("ignore", message=".*mean pooling.*")
 
 if TYPE_CHECKING:  # avoid importing provider modules (and their heavy deps) at module load
     from src.agent.state import StateStore
@@ -115,9 +118,11 @@ class Settings(BaseSettings):
     # --- RAG: embeddings / reranker / vector store (Sprint 2) ---
     embeddings_provider: EmbeddingsProviderName = EmbeddingsProviderName.fastembed
     reranker_provider: RerankerProviderName = RerankerProviderName.fastembed
-    fastembed_dense_model: str = "BAAI/bge-small-en-v1.5"
+    # Multilingual (FR/EN) by default. English-only swaps: dense BAAI/bge-small-en-v1.5,
+    # reranker Xenova/ms-marco-MiniLM-L-6-v2 (lighter, but English-only).
+    fastembed_dense_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     fastembed_sparse_model: str = "Qdrant/bm25"
-    fastembed_rerank_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
+    fastembed_rerank_model: str = "BAAI/bge-reranker-base"
     qdrant_url: str = "http://localhost:6333"
     rag_top_k: int = 6          # chunks returned after rerank
     rag_candidates: int = 20    # candidates per modality before fusion/rerank

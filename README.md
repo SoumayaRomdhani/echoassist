@@ -26,6 +26,12 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`ROADMAP.md`](ROADMAP.md) for the 
 ### Sprint 2 ✅ RAG core — grounded answers with citations
 - Hybrid retrieval: dense + BM25 sparse (FastEmbed) → **RRF fusion (k=60)** →
   cross-encoder rerank → top-k, all provider-agnostic (BGE-M3 is an env swap).
+- **Multilingual (FR/EN) embeddings**; the spoken answer is natural prose and the
+  source citation is kept in metadata (for the dashboard), not read aloud.
+  > Eval on a bilingual KB (18 EN+FR queries): **Recall@1 = nDCG@1 = 1.0** — each
+  > query retrieves its correct same-language document. Cross-lingual ranking
+  > (a French query against English-only docs) is softer on a small KB; a stronger
+  > multilingual model (e.g. BGE-M3) is an env swap if that becomes important.
 - Per-domain **Qdrant** collection; offline ingest pipeline (chunk → embed → index).
 - Retrieval exposed as an **LLM tool** (function calling, Gemini + Ollama); the
   agent answers domain questions and **cites the source document**.

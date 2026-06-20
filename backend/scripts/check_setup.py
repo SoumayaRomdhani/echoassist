@@ -93,7 +93,8 @@ def check_rag() -> None:
         try:
             from qdrant_client import QdrantClient
 
-            collections = QdrantClient(url=s.qdrant_url, timeout=3).get_collections().collections
+            client = QdrantClient(url=s.qdrant_url, timeout=3, check_compatibility=False)
+            collections = client.get_collections().collections
             report(OK, "Qdrant", f"{s.qdrant_url} ({len(collections)} collections)")
         except Exception:  # noqa: BLE001
             report(WARN, "Qdrant", "unreachable — run: docker compose up -d qdrant")

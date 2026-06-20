@@ -133,6 +133,8 @@ class VoicePipeline:
 
         if decision is ConsentDecision.ACCEPTED:
             self._consent_granted = True
+            if self._dialogue is not None:
+                await self._dialogue.record_consent()  # persist consent in the call state
             reply, proceed, ended = self._domain.greeting or "Thank you.", True, False
         elif decision is ConsentDecision.REFUSED:
             reply, proceed, ended = self._domain.consent_decline, False, True
@@ -185,13 +187,13 @@ class VoicePipeline:
     # --- interview (Sprint 3) ---------------------------------------------
     async def begin_interview(self) -> tuple[str, AudioChunk]:
         """Speak the interviewer's first question (after consent + greeting)."""
-        self._require_dialogue()
+        self._require_interview_ready()
         text = await self._dialogue.start()
         return text, await self.speak(text)
 
     async def interview_turn(self, audio) -> InterviewTurn:
         """Process one interview utterance: transcribe -> dialogue decision -> speak."""
-        self._require_dialogue()
+        self._require_interview_ready()
         transcript = await self._stt.transcribe(audio)
         turn = await self._dialogue.handle_turn(transcript.text)
         audio_out = await self.speak(turn.text)
@@ -201,7 +203,10 @@ class VoicePipeline:
         """Synthesize agent speech (no conversation-history side effects)."""
         return await self._tts.synthesize(text)
 
-    def _require_dialogue(self) -> None:
+    def _require_interview_ready(self) -> None:
+        # Compliance: never process interview audio before consent is granted.
+        if not self._consent_granted:
+            raise RuntimeError("interview requested before consent was granted")
         if self._dialogue is None:
             raise RuntimeError("VoicePipeline was constructed without a DialogueManager")
 
