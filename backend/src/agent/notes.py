@@ -46,6 +46,48 @@ def load_notes_schema(domain: str, config_dir: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _coerce_field(key: str, value, spec: dict, issues: list[str]):
+    enum = spec.get("enum")
+    field_type = spec.get("type")
+    if enum is not None:
+        if value in enum:
+            return value
+        issues.append(f"{key}={value!r} not in enum")
+        return "unknown" if "unknown" in enum else enum[0]
+    if field_type == "array":
+        if isinstance(value, list):
+            return [str(v) for v in value]
+        if value in (None, ""):
+            return []
+        issues.append(f"{key} not a list")
+        return [str(value)]
+    if field_type == "string":
+        if isinstance(value, str):
+            return value
+        if value is None:
+            issues.append(f"{key} missing")
+            return ""
+        return str(value)
+    return value if value is not None else ""
+
+
+def validate_and_repair(notes: dict, schema: dict) -> dict:
+    """Coerce notes to the schema so invalid/incomplete LLM output is never saved silently.
+
+    Guarantees required fields are present, types match, enums are respected (e.g.
+    ``overall_fit``), and unknown keys are dropped. Repairs are logged.
+    """
+    properties = schema.get("properties", {})
+    issues: list[str] = []
+    repaired = {
+        key: _coerce_field(key, notes.get(key), spec, issues)
+        for key, spec in properties.items()
+    }
+    if issues:
+        log.warning("notes repaired to schema: %s", "; ".join(issues))
+    return repaired
+
+
 def _render(state: ConversationState) -> str:
     slots = json.dumps(state.slots, ensure_ascii=False, indent=2)
     transcript = "\n".join(f"{t['role']}: {t['text']}" for t in state.transcript)
@@ -76,5 +118,7 @@ class NotesExtractor:
             value = state.slots.get(field)
             if value:
                 notes[field] = value
+
+        notes = validate_and_repair(notes, self._schema)  # never persist schema-invalid notes
         log.info("notes extracted: %s", ", ".join(sorted(notes)))
         return notes
