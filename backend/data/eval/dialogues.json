@@ -1,0 +1,199 @@
+[
+  {
+    "call_id": "testdlg-amina",
+    "transcript": [
+      {
+        "role": "assistant",
+        "text": "How many years of professional experience do you have?"
+      },
+      {
+        "role": "user",
+        "text": "I have about six years of professional experience, mostly with Python."
+      },
+      {
+        "role": "assistant",
+        "text": "What's your primary tech stack?"
+      },
+      {
+        "role": "user",
+        "text": "Python with FastAPI, and PostgreSQL for the database."
+      },
+      {
+        "role": "assistant",
+        "text": "When could you start?"
+      },
+      {
+        "role": "user",
+        "text": "I could start in about three weeks."
+      },
+      {
+        "role": "assistant",
+        "text": "Are you comfortable working remotely, and which time zone are you in?"
+      },
+      {
+        "role": "user",
+        "text": "Yes, fully remote. I'm based in Tunis, Central European Time."
+      },
+      {
+        "role": "assistant",
+        "text": "What are your salary expectations?"
+      },
+      {
+        "role": "user",
+        "text": "I'm looking for around 75,000 euros."
+      }
+    ],
+    "expected_notes": {
+      "years_experience": [
+        "6",
+        "six"
+      ],
+      "primary_stack": [
+        "python",
+        "fastapi"
+      ],
+      "availability": [
+        "three weeks",
+        "3 weeks"
+      ],
+      "remote_setup": [
+        "remote",
+        "tunis"
+      ],
+      "salary_expectation": [
+        "75"
+      ]
+    }
+  },
+  {
+    "call_id": "testdlg-marc",
+    "transcript": [
+      {
+        "role": "assistant",
+        "text": "How many years of professional experience do you have?"
+      },
+      {
+        "role": "user",
+        "text": "Ten years, mainly building backend services in Java."
+      },
+      {
+        "role": "assistant",
+        "text": "What's your primary tech stack?"
+      },
+      {
+        "role": "user",
+        "text": "Java with Spring Boot, and some Kafka."
+      },
+      {
+        "role": "assistant",
+        "text": "When could you start?"
+      },
+      {
+        "role": "user",
+        "text": "I'm available immediately."
+      },
+      {
+        "role": "assistant",
+        "text": "Are you comfortable working remotely, and which time zone are you in?"
+      },
+      {
+        "role": "user",
+        "text": "Remote is fine, I'm in Paris, Central European Time."
+      },
+      {
+        "role": "assistant",
+        "text": "What are your salary expectations?"
+      },
+      {
+        "role": "user",
+        "text": "Around 90,000 euros per year."
+      }
+    ],
+    "expected_notes": {
+      "years_experience": [
+        "10",
+        "ten"
+      ],
+      "primary_stack": [
+        "java",
+        "spring"
+      ],
+      "availability": [
+        "immediate"
+      ],
+      "remote_setup": [
+        "remote",
+        "paris"
+      ],
+      "salary_expectation": [
+        "90"
+      ]
+    }
+  },
+  {
+    "call_id": "testdlg-lina",
+    "transcript": [
+      {
+        "role": "assistant",
+        "text": "How many years of professional experience do you have?"
+      },
+      {
+        "role": "user",
+        "text": "I have three years of experience as a frontend developer."
+      },
+      {
+        "role": "assistant",
+        "text": "What's your primary tech stack?"
+      },
+      {
+        "role": "user",
+        "text": "JavaScript with React, and Node.js."
+      },
+      {
+        "role": "assistant",
+        "text": "When could you start?"
+      },
+      {
+        "role": "user",
+        "text": "I would need about two months' notice."
+      },
+      {
+        "role": "assistant",
+        "text": "Are you comfortable working remotely, and which time zone are you in?"
+      },
+      {
+        "role": "user",
+        "text": "I'd prefer hybrid, I'm based in Lyon."
+      },
+      {
+        "role": "assistant",
+        "text": "What are your salary expectations?"
+      },
+      {
+        "role": "user",
+        "text": "Somewhere around 50,000 euros."
+      }
+    ],
+    "expected_notes": {
+      "years_experience": [
+        "3",
+        "three"
+      ],
+      "primary_stack": [
+        "javascript",
+        "react"
+      ],
+      "availability": [
+        "two months",
+        "2 months"
+      ],
+      "remote_setup": [
+        "hybrid",
+        "lyon"
+      ],
+      "salary_expectation": [
+        "50"
+      ]
+    }
+  }
+]

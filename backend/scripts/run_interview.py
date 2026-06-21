@@ -22,6 +22,7 @@ import uuid
 from pathlib import Path
 
 from config.settings import (
+    build_engine,
     build_llm,
     build_retriever,
     build_state_store,
@@ -31,7 +32,9 @@ from config.settings import (
 )
 from src.agent.dialogue import DialogueManager, LLMTurnClassifier
 from src.agent.domain import load_domain_config
+from src.agent.finalize import finalize_call
 from src.agent.grounding import GroundedResponder
+from src.agent.notes import load_notes_schema
 from src.agent.orchestrator import VoicePipeline
 from src.agent.state import ConversationState
 from src.audio.io import stream_wav
@@ -39,6 +42,8 @@ from src.audio.playback import play
 from src.console import FAIL, bold, dim, init_console
 from src.log import setup_logging
 from src.providers.errors import ProviderError
+from src.runtime import use_selector_event_loop
+from src.storage.db import init_db, make_sessionmaker
 
 log = logging.getLogger("echoassist.interview")
 
@@ -128,15 +133,33 @@ async def main() -> None:
         print(f"{bold('Filled slots:')}")
         for slot, value in state.slots.items():
             print(f"  {slot}: {value}")
-        print(dim(f"\n{len(state.transcript)} turns recorded; "
-                  f"{len(state.query_history)} candidate question(s); state saved to "
-                  f"{settings.state_backend.value}."))
+
+        # Sprint 4: extract structured notes + summary and persist to Postgres.
+        engine = build_engine(settings)
+        await init_db(engine)
+        schema = load_notes_schema(settings.domain, settings.config_dir)
+        try:
+            async with make_sessionmaker(engine)() as session:
+                final = await finalize_call(
+                    session, state, llm=llm, schema=schema,
+                    campaign_name=settings.default_campaign, domain=settings.domain,
+                )
+        finally:
+            await engine.dispose()
+
+        print(f"\n{bold('Notes (persisted):')}")
+        for key, value in final.notes.items():
+            print(f"  {key}: {value}")
+        print(f"\n{bold('Summary:')} {final.summary}")
+        print(dim(f"\npersisted to Postgres: campaign='{settings.default_campaign}' "
+                  f"call db id={final.call.id} (status={final.call.status})"))
     finally:
         await pipeline.aclose()
         await store.aclose()
 
 
 if __name__ == "__main__":
+    use_selector_event_loop()
     try:
         asyncio.run(main())
     except ProviderError as exc:

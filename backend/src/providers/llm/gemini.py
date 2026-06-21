@@ -40,12 +40,20 @@ def _to_provider_error(exc: Exception) -> ProviderError:
     return ProviderError(f"Gemini API error ({code}): {message} — please retry in a moment.")
 
 
+# JSON-Schema meta keys that Gemini's FunctionDeclaration schema does not accept.
+_SCHEMA_DROP_KEYS = frozenset(
+    {"$schema", "$id", "$ref", "title", "definitions", "$defs", "additionalProperties"}
+)
+
+
 def _to_gemini_schema(schema: dict) -> dict:
-    """Convert a standard JSON Schema to Gemini's (uppercase ``type`` values)."""
+    """Convert a standard JSON Schema to Gemini's (uppercase ``type``, no meta keys)."""
     if not isinstance(schema, dict):
         return schema
     converted: dict = {}
     for key, value in schema.items():
+        if key in _SCHEMA_DROP_KEYS:
+            continue
         if key == "type" and isinstance(value, str):
             converted[key] = value.upper()
         elif key == "properties" and isinstance(value, dict):

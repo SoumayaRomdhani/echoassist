@@ -29,6 +29,8 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 warnings.filterwarnings("ignore", message=".*mean pooling.*")
 
 if TYPE_CHECKING:  # avoid importing provider modules (and their heavy deps) at module load
+    from sqlalchemy.ext.asyncio import AsyncEngine
+
     from src.agent.state import StateStore
     from src.providers.llm.base import LLMProvider
     from src.providers.stt.base import STTProvider
@@ -134,6 +136,10 @@ class Settings(BaseSettings):
     state_backend: StateBackendName = StateBackendName.redis
     redis_url: str = "redis://localhost:6379"
     redis_key_prefix: str = "echoassist:call:"
+
+    # --- Persistence (Sprint 4) ---
+    database_url: str = "postgresql+psycopg://echoassist:echoassist@localhost:5433/echoassist"
+    default_campaign: str = "Screening — default campaign"
 
     # --- Generation / misc ---
     llm_temperature: float = 0.3
@@ -279,3 +285,10 @@ def build_state_store(settings: Settings | None = None) -> StateStore:
     from src.agent.state import InMemoryStateStore
 
     return InMemoryStateStore()
+
+
+def build_engine(settings: Settings | None = None) -> AsyncEngine:
+    settings = settings or get_settings()
+    from src.storage.db import make_engine
+
+    return make_engine(settings.database_url)

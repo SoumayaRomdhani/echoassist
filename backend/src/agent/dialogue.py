@@ -9,7 +9,6 @@ so it is fully unit-testable without models.
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -17,6 +16,7 @@ from typing import Protocol
 
 from src.agent.domain import DomainConfig
 from src.agent.grounding import GroundedResponder
+from src.agent.jsonutil import extract_json
 from src.agent.state import ConversationState, StateStore
 from src.providers.llm.base import LLMProvider
 from src.providers.types import Message, Role
@@ -77,18 +77,6 @@ _CLASSIFY_SYSTEM = (
 )
 
 
-def _extract_json(text: str) -> dict | None:
-    if not text:
-        return None
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end <= start:
-        return None
-    try:
-        return json.loads(text[start : end + 1])
-    except json.JSONDecodeError:
-        return None
-
-
 class LLMTurnClassifier:
     """Classifies a turn via a single JSON-returning LLM call (provider-agnostic)."""
 
@@ -100,7 +88,7 @@ class LLMTurnClassifier:
             Message(Role.SYSTEM, _CLASSIFY_SYSTEM.format(question=question)),
             Message(Role.USER, utterance),
         ]
-        data = _extract_json((await self._llm.chat(messages)).text) or {}
+        data = extract_json((await self._llm.chat(messages)).text) or {}
         try:
             intent = TurnIntent(str(data.get("intent", "unclear")).lower())
         except ValueError:

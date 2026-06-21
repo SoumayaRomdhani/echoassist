@@ -117,6 +117,24 @@ def check_state() -> None:
             report(WARN, "Redis", "unreachable — run: docker compose up -d redis")
 
 
+def check_storage() -> None:
+    s = get_settings()
+    print("\nPersistence (Sprint 4)")
+    for module in ("sqlalchemy", "psycopg"):
+        installed = _installed(module)
+        report(OK if installed else WARN, module, "installed" if installed else "not installed")
+    if _installed("psycopg"):
+        try:
+            import psycopg
+
+            dsn = s.database_url.replace("postgresql+psycopg://", "postgresql://")
+            with psycopg.connect(dsn, connect_timeout=3):
+                pass
+            report(OK, "Postgres", s.database_url.rsplit("@", 1)[-1])
+        except Exception:  # noqa: BLE001
+            report(WARN, "Postgres", "unreachable — run: docker compose up -d postgres")
+
+
 async def check_smoke() -> None:
     s = get_settings()
     print("\nSmoke test (loads models — first run downloads weights)")
@@ -157,6 +175,7 @@ async def main() -> None:
     check_dependencies()
     check_rag()
     check_state()
+    check_storage()
     if args.full:
         await check_smoke()
 
