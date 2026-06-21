@@ -27,14 +27,19 @@ backend/.cache/
 # --- Generated audio (keep .gitkeep) ---
 backend/data/test_audio/*
 !backend/data/test_audio/.gitkeep
-backend/data/docs/**/*
-!backend/data/docs/**/.gitkeep
+
+# NOTE: demo RAG documents in backend/data/docs/screening/ ARE committed, so a
+# fresh clone can re-ingest and test the RAG/eval. Do NOT add real client
+# documents to the repo (keep those out of version control).
 
 # --- OS / editor ---
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
+
+# --- Local Claude Code settings (machine-specific; do not commit) ---
+.claude/settings.local.json
 
 # --- Node (frontend, sprint 7) ---
 node_modules/
