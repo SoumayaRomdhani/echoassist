@@ -15,6 +15,15 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`ROADMAP.md`](ROADMAP.md) for the 
 
 ## Status
 
+### Sprint 5 ✅ Latency & quality hardening
+- `agent/guardrails.py`: **grounding gate** (low reranker confidence → the agent
+  refuses instead of answering outside the knowledge base) + **PII redaction**
+  (emails/phones masked before persistence; names kept).
+- `eval/latency_eval.py`: per-stage **p50/p95** (STT / retrieval / TTS / LLM).
+- `eval/transcription_eval.py`: **WER** on clean vs telephonized audio.
+  > On this CPU a turn is ~30 s (STT dominates); the < 800 ms target needs a GPU +
+  > streaming (Sprint 8). The harness makes the per-stage cost measurable.
+
 ### Sprint 4 ✅ Structured notes & summary + Postgres
 - `agent/notes.py`: structured notes via **function calling** (schema in
   `config/schemas/screening.json`; the 5 factual fields mirror the interview slots,
@@ -132,6 +141,17 @@ python -m src.eval.notes_eval                            # notes field accuracy 
 `run_interview.py` also finalizes at the end of a real call: it extracts the
 structured notes, writes the grounded summary, and persists campaign / call /
 transcript / notes / summary to Postgres.
+
+## Latency & quality evals (Sprint 5)
+
+```bash
+python -m src.eval.transcription_eval     # WER, clean vs telephonized (local, no API)
+python -m src.eval.latency_eval --iters 5 # per-stage p50/p95 (local stages)
+```
+
+The grounding gate is enforced in `ask.py` / the interview: an off-topic question
+(reranker confidence below `GROUNDING_MIN_CONFIDENCE`) is refused rather than
+answered. PII (emails/phones) is redacted before anything is written to Postgres.
 
 ## Infrastructure
 

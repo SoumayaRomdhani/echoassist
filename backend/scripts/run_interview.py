@@ -92,7 +92,10 @@ async def main() -> None:
     state = ConversationState(call_id=uuid.uuid4().hex)
     dialogue = DialogueManager(
         classifier=LLMTurnClassifier(llm),
-        responder=GroundedResponder(llm, retriever, system_prompt=domain.system_prompt),
+        responder=GroundedResponder(
+            llm, retriever, system_prompt=domain.system_prompt,
+            min_confidence=settings.grounding_min_confidence,
+        ),
         domain=domain,
         state=state,
         store=store,
@@ -143,6 +146,7 @@ async def main() -> None:
                 final = await finalize_call(
                     session, state, llm=llm, schema=schema,
                     campaign_name=settings.default_campaign, domain=settings.domain,
+                    redact=settings.redact_pii,
                 )
         finally:
             await engine.dispose()

@@ -13,6 +13,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 
+from src.agent.guardrails import is_grounded
 from src.providers.llm.base import LLMProvider
 from src.providers.types import Message, Role, ToolSpec
 from src.rag.retriever import Retriever
@@ -77,11 +78,13 @@ class GroundedResponder:
         *,
         system_prompt: str,
         max_tool_iters: int = 3,
+        min_confidence: float = 0.0,
     ) -> None:
         self._llm = llm
         self._retriever = retriever
         self._system_prompt = f"{system_prompt}\n\n{_GROUNDING_RULES}"
         self._max_tool_iters = max_tool_iters
+        self._min_confidence = min_confidence  # grounding gate (0.0 = off)
 
     @staticmethod
     def _format_context(chunks: list[ScoredChunk]) -> str:
@@ -109,12 +112,18 @@ class GroundedResponder:
                 tool_calls += 1
                 query = str(call.arguments.get("query") or question)
                 chunks = await asyncio.to_thread(self._retriever.retrieve, query)
-                retrieved.extend(chunks)
-                log.info("tool search query=%r -> %d chunks", query, len(chunks))
+                # Grounding gate: drop low-confidence chunks so the model answers
+                # from the KB or refuses — never from weak/irrelevant context.
+                confident = [c for c in chunks if is_grounded(c.score, self._min_confidence)]
+                retrieved.extend(confident)
+                log.info(
+                    "tool search query=%r -> %d chunks (%d confident)",
+                    query, len(chunks), len(confident),
+                )
                 messages.append(
                     Message(
                         Role.TOOL,
-                        self._format_context(chunks),
+                        self._format_context(confident),
                         tool_call_id=call.id,
                         name=call.name,
                     )

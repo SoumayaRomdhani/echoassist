@@ -34,6 +34,7 @@ async def main() -> None:
         build_llm(settings),
         build_retriever(settings),
         system_prompt=domain.system_prompt,
+        min_confidence=settings.grounding_min_confidence,
     )
 
     print(f"\n{bold('QUESTION:')} {args.question}")

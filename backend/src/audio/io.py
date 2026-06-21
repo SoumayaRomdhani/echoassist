@@ -8,6 +8,8 @@ Resampling uses ``soxr`` (high quality, light wheel).
 from __future__ import annotations
 
 import asyncio
+import shutil
+import subprocess
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -18,6 +20,9 @@ import soxr
 from src.providers.types import AudioChunk, AudioFormat
 
 _PCM16_PEAK = 32767
+
+# Narrowband telephony profile: 8 kHz, band-pass 300-3400 Hz, G.711 µ-law.
+_TELEPHONY_FILTER = "highpass=f=300,lowpass=f=3400"
 
 
 # --------------------------------------------------------------------------- #
@@ -71,6 +76,23 @@ def chunk_to_float(chunk: AudioChunk) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 # Streaming a file as if live                                                 #
 # --------------------------------------------------------------------------- #
+def telephonize(src: str | Path, dst: str | Path, *, sample_rate: int = 8000) -> None:
+    """Apply PSTN characteristics to a WAV via ffmpeg (8 kHz band-pass µ-law)."""
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError(
+            "ffmpeg not found on PATH. Install it (Windows: `winget install Gyan.FFmpeg`) "
+            "and reopen your shell."
+        )
+    Path(dst).parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", str(src),
+        "-ar", str(sample_rate), "-ac", "1", "-af", _TELEPHONY_FILTER,
+        "-c:a", "pcm_mulaw", str(dst),
+    ]
+    subprocess.run(cmd, check=True)
+
+
 async def stream_wav(
     path: str | Path,
     *,

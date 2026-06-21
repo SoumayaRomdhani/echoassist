@@ -55,6 +55,7 @@ async def main() -> None:
             final = await finalize_call(
                 session, state, llm=llm, schema=schema,
                 campaign_name=settings.default_campaign, domain=settings.domain,
+                redact=settings.redact_pii,
             )
     finally:
         await engine.dispose()
