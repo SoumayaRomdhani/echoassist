@@ -141,6 +141,14 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://echoassist:echoassist@localhost:5433/echoassist"
     default_campaign: str = "Screening — default campaign"
 
+    # --- Guardrails (Sprint 5) ---
+    # Min reranker confidence to answer (else refuse). Calibrated low: the light
+    # multilingual reranker scores FR pairs low (~0.14) while clearly off-topic
+    # queries score ~0.00, so 0.10 refuses off-topic without over-refusing French.
+    # A stronger reranker (bge-reranker-v2-m3) would allow a higher threshold.
+    grounding_min_confidence: float = 0.10
+    redact_pii: bool = True                # mask emails/phones before persistence
+
     # --- Generation / misc ---
     llm_temperature: float = 0.3
     llm_max_tokens: int = 512
