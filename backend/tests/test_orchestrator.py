@@ -179,3 +179,47 @@ async def test_consent_acceptance_is_persisted_by_the_pipeline() -> None:
     assert consent.decision is ConsentDecision.ACCEPTED
     assert pipeline.consent_granted is True
     assert dialogue.consent_recorded is True   # pipeline persisted it, not the script
+
+
+class _StreamingResponder:
+    async def answer_streaming(self, question: str):
+        for delta in ["The role is fully remote ", "[remote_work_policy.md]. ", "It is in the EU."]:
+            yield delta
+
+
+class _QuestionClassifier:
+    async def classify(self, question: str, utterance: str):
+        from src.agent.dialogue import TurnDecision, TurnIntent
+
+        return TurnDecision(TurnIntent.QUESTION, caller_question="remote?")
+
+
+@pytest.mark.asyncio
+async def test_interview_turn_streaming_uses_the_streaming_path() -> None:
+    from src.agent.dialogue import DialogueManager
+    from src.agent.state import ConversationState, InMemoryStateStore
+
+    flow = {"states": [{"id": "q", "type": "question", "slot": "x", "prompt": "Your experience?"}]}
+    domain = DomainConfig(
+        name="screening", language="en", disclosure="d", greeting="g", system_prompt="s",
+        consent_reprompt="r", consent_decline="x", flow=flow,
+    )
+    state = ConversationState(call_id="c1")
+    dialogue = DialogueManager(
+        classifier=_QuestionClassifier(), responder=_StreamingResponder(),
+        domain=domain, state=state, store=InMemoryStateStore(),
+    )
+    pipeline = VoicePipeline(FakeSTT("is the role remote?"), FakeLLM(), FakeTTS(), domain,
+                             dialogue=dialogue)
+    pipeline._consent_granted = True  # bypass the consent gate for the test
+
+    transcript, audio_stream = await pipeline.interview_turn_streaming(_audio())
+    chunks = [chunk async for chunk in audio_stream]
+
+    assert transcript == "is the role remote?"
+    assert len(chunks) >= 2                                   # streamed sentence-by-sentence
+    spoken = [c.data.decode() for c in chunks]                # FakeTTS encodes the text it spoke
+    assert any("fully remote" in s for s in spoken)
+    assert all("[remote_work_policy.md]" not in s for s in spoken)  # citation stripped before TTS
+    assert state.transcript[-1]["role"] == "assistant"
+    assert "[" not in state.transcript[-1]["text"]            # recorded reply is the spoken text

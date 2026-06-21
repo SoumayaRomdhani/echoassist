@@ -10,12 +10,14 @@ so it is fully unit-testable without models.
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
 from src.agent.domain import DomainConfig
-from src.agent.grounding import GroundedResponder
+from src.agent.grounding import GroundedResponder, strip_citations
+from src.agent.guardrails import redact_pii
 from src.agent.jsonutil import extract_json
 from src.agent.state import ConversationState, StateStore
 from src.providers.llm.base import LLMProvider
@@ -111,6 +113,22 @@ class DialogueTurn:
     intent: TurnIntent | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _Grounded:
+    """A reply part to be answered from the knowledge base."""
+
+    question: str
+
+
+@dataclass(slots=True)
+class _Reply:
+    """A planned reply: literal text and/or grounded questions, plus the end flag."""
+
+    parts: list  # list[str | _Grounded]
+    ended: bool
+    intent: TurnIntent | None = None
+
+
 class DialogueManager:
     def __init__(
         self,
@@ -121,6 +139,7 @@ class DialogueManager:
         state: ConversationState,
         store: StateStore,
         max_question_retries: int = 2,
+        redact: bool = True,
     ) -> None:
         self._classifier = classifier
         self._responder = responder
@@ -129,6 +148,7 @@ class DialogueManager:
         self._state = state
         self._store = store
         self._max_question_retries = max_question_retries
+        self._redact = redact
 
     @property
     def state(self) -> ConversationState:
@@ -156,45 +176,85 @@ class DialogueManager:
         return first.prompt
 
     async def handle_turn(self, transcript: str) -> DialogueTurn:
+        """Non-streaming turn: materialize the whole reply, then return it."""
         current = self._current
         if current is None:
             return DialogueTurn(text="", ended=True)
+        transcript, decision = await self._begin_turn(current, transcript)
+        plan = self._plan(current, transcript, decision)
 
+        pieces: list[str] = []
+        citations: list[str] = []
+        for part in plan.parts:
+            if isinstance(part, _Grounded):
+                answer = await self._responder.answer(part.question)
+                pieces.append(answer.text)
+                citations.extend(answer.citations)
+            else:
+                pieces.append(part)
+        text = " ".join(p for p in pieces if p).strip()
+
+        self._state.add_turn("assistant", text)
+        await self._store.save(self._state)
+        return DialogueTurn(text=text, ended=plan.ended, citations=citations, intent=plan.intent)
+
+    async def handle_turn_streaming(self, transcript: str) -> AsyncIterator[str]:
+        """Streaming turn: yield reply text deltas (grounded answers via the LLM stream).
+
+        Same decision/slot logic as :meth:`handle_turn`; the reply is streamed so
+        audio can start at the first sentence. The recorded assistant turn is the
+        spoken (citation-stripped) text. Check :attr:`finished` afterwards for end.
+        """
+        current = self._current
+        if current is None:
+            return
+        transcript, decision = await self._begin_turn(current, transcript)
+        plan = self._plan(current, transcript, decision)
+
+        raw = ""
+        for part in plan.parts:
+            if isinstance(part, _Grounded):
+                async for delta in self._responder.answer_streaming(part.question):
+                    raw += delta
+                    yield delta
+            else:
+                chunk = f"{part} "
+                raw += chunk
+                yield chunk
+
+        self._state.add_turn("assistant", strip_citations(raw))
+        await self._store.save(self._state)
+
+    # --- shared turn logic -------------------------------------------------
+    async def _begin_turn(self, current: State, transcript: str) -> tuple[str, TurnDecision]:
+        # Mask PII at the input so it never reaches the persisted state (Redis) or slots.
+        if self._redact:
+            transcript = redact_pii(transcript)
         self._state.add_turn("user", transcript)
         decision = await self._classifier.classify(current.prompt, transcript)
+        return transcript, decision
 
+    def _plan(self, current: State, transcript: str, decision: TurnDecision) -> _Reply:
+        """Decide the reply (and apply slot/state mutations); deliver it later."""
         if current.type == "question":
-            turn = await self._handle_question(current, transcript, decision)
-        elif current.type == "grounded_qa":
-            turn = await self._handle_grounded_qa(transcript, decision)
-        else:  # close
-            turn = DialogueTurn(text=current.prompt, ended=True)
+            return self._plan_question(current, transcript, decision)
+        if current.type == "grounded_qa":
+            return self._plan_grounded_qa(transcript, decision)
+        return _Reply(parts=[current.prompt], ended=True)  # close
 
-        self._state.add_turn("assistant", turn.text)
-        await self._store.save(self._state)
-        return turn
-
-    # --- per-state handlers ------------------------------------------------
-    async def _handle_question(
-        self, state: State, transcript: str, decision: TurnDecision
-    ) -> DialogueTurn:
+    def _plan_question(self, state: State, transcript: str, decision: TurnDecision) -> _Reply:
         if decision.intent is TurnIntent.QUESTION:
-            answer = await self._answer_question(decision, transcript)
+            question = decision.caller_question or transcript
+            self._state.query_history.append(question)
             # Answer their question, then re-ask the current interview question.
-            return DialogueTurn(
-                text=f"{answer.text} {state.prompt}",
-                ended=False,
-                citations=answer.citations,
-                intent=decision.intent,
-            )
+            return _Reply([_Grounded(question), state.prompt], ended=False, intent=decision.intent)
         if decision.intent is TurnIntent.ANSWER:
             if state.slot:
                 self._state.slots[state.slot] = decision.answer_value or transcript
             self._state.question_attempts.pop(state.id, None)
             return self._advance(prepend_ack=True)
 
-        # done / unclear: re-ask, but skip the question after too many failed attempts
-        # so a non-answering caller can't loop the interview forever.
+        # done / unclear: re-ask, but skip after too many failed attempts.
         attempts = self._state.question_attempts.get(state.id, 0) + 1
         self._state.question_attempts[state.id] = attempts
         if attempts >= self._max_question_retries:
@@ -202,31 +262,22 @@ class DialogueManager:
                 self._state.slots[state.slot] = ""  # leave unanswered
             log.info("skipping question '%s' after %d unclear attempts", state.id, attempts)
             return self._advance(prepend_ack=False)
-        return DialogueTurn(text=f"Sorry — {state.prompt}", ended=False, intent=decision.intent)
+        return _Reply([f"Sorry — {state.prompt}"], ended=False, intent=decision.intent)
 
-    async def _handle_grounded_qa(self, transcript: str, decision: TurnDecision) -> DialogueTurn:
+    def _plan_grounded_qa(self, transcript: str, decision: TurnDecision) -> _Reply:
         if decision.intent is TurnIntent.DONE:
             return self._advance(prepend_ack=False)
-        answer = await self._answer_question(decision, transcript)
-        # Stay in grounded Q&A so the caller can ask follow-ups.
-        return DialogueTurn(
-            text=answer.text, ended=False, citations=answer.citations, intent=decision.intent
-        )
-
-    # --- helpers -----------------------------------------------------------
-    async def _answer_question(self, decision: TurnDecision, transcript: str):
         question = decision.caller_question or transcript
         self._state.query_history.append(question)
-        return await self._responder.answer(question)
+        return _Reply([_Grounded(question)], ended=False, intent=decision.intent)
 
-    def _advance(self, *, prepend_ack: bool) -> DialogueTurn:
+    def _advance(self, *, prepend_ack: bool) -> _Reply:
         self._state.state_index += 1
         nxt = self._current
         if nxt is None:
-            return DialogueTurn(text="", ended=True)
+            return _Reply([], ended=True)
         text = f"{self._ack} {nxt.prompt}".strip() if prepend_ack and self._ack else nxt.prompt
         if nxt.type == "close":
-            # The close line is the last thing said; mark the flow finished.
-            self._state.state_index = len(self._states)
-            return DialogueTurn(text=text, ended=True)
-        return DialogueTurn(text=text, ended=False)
+            self._state.state_index = len(self._states)  # close is the last line
+            return _Reply([text], ended=True)
+        return _Reply([text], ended=False)

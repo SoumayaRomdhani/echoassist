@@ -37,12 +37,14 @@ class WhisperLocalSTT(STTProvider):
         compute_type: str = "int8",
         language: str | None = None,
         beam_size: int = 5,
+        cpu_threads: int = 0,
     ) -> None:
         self._model_size = model_size
         self._device = device
         self._compute_type = compute_type
         self._language = language
         self._beam_size = beam_size
+        self._cpu_threads = cpu_threads
         self._model: WhisperModel | None = None
         self._active_device: str | None = None
 
@@ -68,7 +70,12 @@ class WhisperLocalSTT(STTProvider):
             device,
             self._compute_type,
         )
-        model = WhisperModel(self._model_size, device=device, compute_type=self._compute_type)
+        model = WhisperModel(
+            self._model_size,
+            device=device,
+            compute_type=self._compute_type,
+            cpu_threads=self._cpu_threads,
+        )
         self._active_device = device
         return model
 

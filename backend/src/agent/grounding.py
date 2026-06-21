@@ -13,7 +13,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 
-from src.agent.guardrails import is_grounded
+from src.agent.guardrails import is_grounded, refusal_message
 from src.providers.llm.base import LLMProvider
 from src.providers.types import Message, Role, ToolSpec
 from src.rag.retriever import Retriever
@@ -50,6 +50,10 @@ def _spoken(text: str) -> str:
     stripped = _CITATION_PATTERN.sub("", text)
     stripped = re.sub(r"\s+([.,;:!?])", r"\1", stripped)
     return re.sub(r"\s{2,}", " ", stripped).strip()
+
+
+# Public alias for reuse (e.g. cleaning streamed sentences before TTS).
+strip_citations = _spoken
 
 
 _GROUNDING_RULES = (
@@ -133,9 +137,44 @@ class GroundedResponder:
         final = await self._llm.chat(messages)
         return self._finalize(final.text, retrieved, tool_calls)
 
+    async def answer_streaming(self, question: str):
+        """Stream the grounded answer as raw text deltas (with ``[source]`` markers).
+
+        Same retrieval + deterministic-refusal logic as :meth:`answer`, but the
+        FINAL answer is produced with ``chat_stream`` so audio can start before the
+        whole answer is written. Citation stripping happens downstream, per sentence.
+        """
+        messages = [Message(Role.SYSTEM, self._system_prompt), Message(Role.USER, question)]
+        retrieved: list[ScoredChunk] = []
+
+        for _ in range(self._max_tool_iters):
+            response = await self._llm.chat(messages, tools=[SEARCH_TOOL])
+            if not response.tool_calls:
+                break  # the model is ready to answer
+            messages.append(Message(Role.ASSISTANT, response.text, tool_calls=response.tool_calls))
+            for call in response.tool_calls:
+                query = str(call.arguments.get("query") or question)
+                chunks = await asyncio.to_thread(self._retriever.retrieve, query)
+                confident = [c for c in chunks if is_grounded(c.score, self._min_confidence)]
+                retrieved.extend(confident)
+                messages.append(
+                    Message(Role.TOOL, self._format_context(confident),
+                            tool_call_id=call.id, name=call.name)
+                )
+
+        if not retrieved:  # deterministic refusal — never stream an ungrounded answer
+            yield refusal_message()
+            return
+        async for delta in self._llm.chat_stream(messages):
+            yield delta
+
     def _finalize(
         self, raw_text: str, retrieved: list[ScoredChunk], tool_calls: int
     ) -> GroundedAnswer:
+        # Deterministic grounding: with no confident chunk, refuse — never trust the
+        # LLM to have refused on its own (guarantees "no answer outside the KB").
+        if not retrieved:
+            return GroundedAnswer(text=refusal_message(), citations=[], tool_calls=tool_calls)
         # Citations are parsed from the raw model text; the spoken text has them stripped.
         return GroundedAnswer(
             text=_spoken(raw_text),

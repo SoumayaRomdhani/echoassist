@@ -71,6 +71,64 @@ async def test_direct_answer_without_tool_call() -> None:
     assert "don't have" in answer.text
 
 
+def _grounded_llm(answer_text: str, query: str) -> ScriptedLLM:
+    call = ToolCall("c1", "search_knowledge_base", {"query": query})
+    return ScriptedLLM([LLMResponse(text="", tool_calls=[call]), LLMResponse(text=answer_text)])
+
+
+@pytest.mark.asyncio
+async def test_french_question_is_grounded_with_citation() -> None:
+    src = "politique_teletravail_fr.md"
+    chunk = ScoredChunk(Chunk(f"{src}#0", src, ".", 0), 2.0)
+    llm = _grounded_llm(f"Le poste est en télétravail intégral [{src}].", "télétravail")
+    answer = await _responder(llm, FakeRetriever([chunk])).answer("Puis-je télétravailler ?")
+
+    assert answer.citations == [src]
+    assert "télétravail" in answer.text and "[" not in answer.text
+
+
+@pytest.mark.asyncio
+async def test_french_without_accents_from_stt_still_grounded() -> None:
+    src = "remuneration_avantages_fr.md"
+    chunk = ScoredChunk(Chunk(f"{src}#0", src, ".", 0), 2.0)
+    llm = _grounded_llm(f"La fourchette est 65 000 a 85 000 euros [{src}].", "salaire")
+    answer = await _responder(llm, FakeRetriever([chunk])).answer(
+        "Quelle est la fourchette de salaire ?"
+    )
+
+    assert answer.citations == [src]
+
+
+@pytest.mark.asyncio
+async def test_off_domain_low_confidence_is_deterministically_refused() -> None:
+    weak = ScoredChunk(Chunk("x.md#0", "x.md", "irrelevant", 0), -5.0)  # confidence ~0.007
+    retriever = FakeRetriever([weak])
+    # Even though the model tries to answer after weak context, we must refuse.
+    llm = _grounded_llm("The weather is sunny today.", "weather")
+    responder = GroundedResponder(
+        llm, retriever, system_prompt="You are a screening assistant.", min_confidence=0.1
+    )
+    answer = await responder.answer("What's the weather in Paris?")
+
+    assert answer.retrieved == []          # weak chunk filtered by the gate
+    assert answer.citations == []
+    assert "sunny" not in answer.text      # hallucination NOT returned
+    assert "recruiter" in answer.text.lower()   # deterministic refusal
+
+
+@pytest.mark.asyncio
+async def test_no_confident_chunk_never_invents_an_answer() -> None:
+    retriever = FakeRetriever([])  # nothing retrieved at all
+    llm = _grounded_llm("Made-up answer.", "anything")
+    responder = GroundedResponder(
+        llm, retriever, system_prompt="You are a screening assistant.", min_confidence=0.1
+    )
+    answer = await responder.answer("Off-topic question?")
+
+    assert answer.retrieved == [] and answer.citations == []
+    assert "made-up" not in answer.text.lower()
+
+
 def test_search_tool_schema_is_well_formed() -> None:
     assert SEARCH_TOOL.name == "search_knowledge_base"
     assert SEARCH_TOOL.parameters["required"] == ["query"]

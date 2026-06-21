@@ -103,6 +103,7 @@ class Settings(BaseSettings):
     whisper_compute_type: str = "int8"    # int8 | int8_float16 | float16 | float32
     whisper_language: str | None = None   # None => auto-detect
     whisper_beam_size: int = 5
+    whisper_cpu_threads: int = 0          # 0 = library default (uses all physical cores)
 
     # --- LLM: Gemini (default) ---
     gemini_api_key: str | None = None
@@ -142,11 +143,12 @@ class Settings(BaseSettings):
     default_campaign: str = "Screening — default campaign"
 
     # --- Guardrails (Sprint 5) ---
-    # Min reranker confidence to answer (else refuse). Calibrated low: the light
-    # multilingual reranker scores FR pairs low (~0.14) while clearly off-topic
-    # queries score ~0.00, so 0.10 refuses off-topic without over-refusing French.
-    # A stronger reranker (bge-reranker-v2-m3) would allow a higher threshold.
-    grounding_min_confidence: float = 0.10
+    # Min reranker confidence to answer (else refuse). Calibrated on eval/grounding_eval:
+    # the light multilingual reranker scores some legitimate FR questions as low as
+    # ~0.06 while clearly off-topic queries score ~0.00, so 0.05 accepts FR and still
+    # refuses off-topic. The FR margin is thin — a stronger reranker (bge-reranker-v2-m3)
+    # would give more room (tracked multilingual follow-up).
+    grounding_min_confidence: float = 0.05
     redact_pii: bool = True                # mask emails/phones before persistence
 
     # --- Generation / misc ---
@@ -187,6 +189,7 @@ def build_stt(settings: Settings | None = None) -> STTProvider:
             compute_type=settings.whisper_compute_type,
             language=settings.whisper_language,
             beam_size=settings.whisper_beam_size,
+            cpu_threads=settings.whisper_cpu_threads,
         )
     raise NotImplementedError(f"STT provider not yet implemented: {settings.stt_provider.value}")
 

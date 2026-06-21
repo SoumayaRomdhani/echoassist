@@ -146,7 +146,8 @@ transcript / notes / summary to Postgres.
 
 ```bash
 python -m src.eval.transcription_eval     # WER, clean vs telephonized (local, no API)
-python -m src.eval.latency_eval --iters 5 # per-stage p50/p95 (local stages)
+python -m src.eval.latency_eval --iters 5 # per-stage p50/p95 + TTFA (local stages)
+python -m src.eval.grounding_eval         # grounding-gate calibration EN/FR (local)
 ```
 
 The grounding gate is enforced in `ask.py` / the interview: an off-topic question

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
 from src.agent.consent import ConsentDecision, classify_consent
@@ -192,16 +193,42 @@ class VoicePipeline:
         return text, await self.speak(text)
 
     async def interview_turn(self, audio) -> InterviewTurn:
-        """Process one interview utterance: transcribe -> dialogue decision -> speak."""
+        """Non-streaming interview turn: transcribe -> dialogue decision -> speak (fallback)."""
         self._require_interview_ready()
         transcript = await self._stt.transcribe(audio)
         turn = await self._dialogue.handle_turn(transcript.text)
         audio_out = await self.speak(turn.text)
         return InterviewTurn(transcript.text, turn.text, audio_out, turn.ended, turn.citations)
 
+    async def interview_turn_streaming(self, audio) -> tuple[str, AsyncIterator[AudioChunk]]:
+        """Streaming interview turn: returns (caller transcript, agent audio stream).
+
+        The agent's audio starts at the first complete sentence; grounded answers
+        stream from the LLM. After consuming the stream, ``dialogue.finished`` tells
+        you whether the interview ended and the recorded reply is in the call state.
+        """
+        from src.agent.grounding import strip_citations
+        from src.agent.streaming import synthesize_streaming
+
+        self._require_interview_ready()
+        transcript = await self._stt.transcribe(audio)
+        text_stream = self._dialogue.handle_turn_streaming(transcript.text)
+        audio_stream = synthesize_streaming(text_stream, self._tts, clean=strip_citations)
+        return transcript.text, audio_stream
+
     async def speak(self, text: str) -> AudioChunk:
         """Synthesize agent speech (no conversation-history side effects)."""
         return await self._tts.synthesize(text)
+
+    def speak_stream(self, text_stream):
+        """Stream agent audio sentence-by-sentence from an LLM text stream.
+
+        Returns an async iterator of audio chunks; the first chunk is available
+        after the first sentence, not after the whole reply (better TTFA).
+        """
+        from src.agent.streaming import synthesize_streaming
+
+        return synthesize_streaming(text_stream, self._tts)
 
     def _require_interview_ready(self) -> None:
         # Compliance: never process interview audio before consent is granted.
