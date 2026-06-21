@@ -99,6 +99,7 @@ async def main() -> None:
         domain=domain,
         state=state,
         store=store,
+        redact=settings.redact_pii,
     )
     pipeline = VoicePipeline(
         build_stt(settings), llm, build_tts(settings), domain, dialogue=dialogue
@@ -125,11 +126,18 @@ async def main() -> None:
         await _emit("AGENT (question):", question_text, question_audio, play_audio=play_audio)
 
         for path in answer_paths:
-            turn = await pipeline.interview_turn(stream_wav(path, realtime=realtime))
-            print(f"\n{bold('CALLER:')} {turn.transcript}")
-            label = "AGENT:" if not turn.citations else f"AGENT {dim(turn.citations)}:"
-            await _emit(label, turn.reply, turn.audio, play_audio=play_audio)
-            if turn.ended:
+            # Streaming turn: audio starts at the first sentence (grounded answers
+            # stream from the LLM), instead of waiting for the whole reply.
+            caller_text, audio_stream = await pipeline.interview_turn_streaming(
+                stream_wav(path, realtime=realtime)
+            )
+            print(f"\n{bold('CALLER:')} {caller_text}")
+            async for chunk in audio_stream:  # consume as it streams
+                if play_audio:
+                    await play(chunk)
+            reply_text = state.transcript[-1]["text"] if state.transcript else ""
+            print(f"{bold('AGENT:')} {reply_text}")
+            if dialogue.finished:
                 break
 
         print(bold("\n\n--- Interview complete ---"))

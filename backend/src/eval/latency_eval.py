@@ -18,8 +18,10 @@ import argparse
 import asyncio
 import math
 import time
+from collections.abc import AsyncIterator
 
 from config.settings import build_llm, build_retriever, build_stt, build_tts, get_settings
+from src.agent.streaming import synthesize_streaming
 from src.audio.io import chunk_from_float, read_wav, resample
 from src.console import bold, dim, init_console
 from src.log import setup_logging
@@ -74,7 +76,12 @@ async def main() -> None:
 
     stt, retriever, tts = build_stt(settings), build_retriever(settings), build_tts(settings)
     query = "What is the salary range for the backend role?"
-    reply = "The base salary range is 65,000 to 85,000 euros per year, depending on experience."
+    # Multi-sentence so TTFA (first sentence) is visibly lower than full TTS.
+    reply = (
+        "The base salary range is 65,000 to 85,000 euros per year. "
+        "It depends on your experience and location. "
+        "The role is also fully remote within the EU."
+    )
 
     print(bold(f"\nLatency eval — {args.iters} iterations (after warm-up)\n"))
     p50s = {}
@@ -82,18 +89,40 @@ async def main() -> None:
     p50s["retrieval"] = _report(
         "retrieval", await _time(lambda: asyncio.to_thread(retriever.retrieve, query), args.iters)
     )
-    p50s["tts"] = _report("TTS", await _time(lambda: tts.synthesize(reply), args.iters))
+    p50s["tts"] = _report("TTS(full)", await _time(lambda: tts.synthesize(reply), args.iters))
+
+    async def _reply_deltas() -> AsyncIterator[str]:
+        for word in reply.split(" "):  # simulate the LLM emitting the reply in deltas
+            yield word + " "
+
+    async def tts_stream_first() -> None:
+        async for _ in synthesize_streaming(_reply_deltas(), tts):
+            return  # first audio = after the first sentence, not the whole reply
+
+    ttfa_tts = _report("TTFA-TTS(sim)", await _time(tts_stream_first, args.iters))
+
+    ttfa_real = None
     if args.with_llm:
         llm = build_llm(settings)
         p50s["llm"] = _report(
             "LLM", await _time(lambda: llm.chat([Message(Role.USER, query)]), args.iters)
         )
 
+        async def llm_tts_first() -> None:  # real LLM stream -> TTS first audio
+            async for _ in synthesize_streaming(llm.chat_stream([Message(Role.USER, query)]), tts):
+                return
+
+        ttfa_real = _report("TTFA(LLM→TTS)", await _time(llm_tts_first, args.iters))
+
     total = sum(p50s.values())
-    print(bold(f"\n  sum of p50s = {total:.0f} ms/turn"))
-    print(dim("  (target < 800 ms/turn — realistic with a GPU + streaming, ARCHITECTURE.md §9)"))
-    if total > 800:
-        print(dim("  On CPU the STT stage dominates; GPU + streaming (Sprint 8) closes the gap.\n"))
+    print(bold(f"\n  full turn (sum of p50s) = {total:.0f} ms"))
+    print(dim(f"  TTFA-TTS(simulated deltas) = {ttfa_tts:.0f} ms  — TTS-only, excludes STT + LLM"))
+    if ttfa_real is not None:
+        perceived = p50s["stt"] + ttfa_real
+        print(bold(f"  perceived first-audio ≈ STT + TTFA(LLM→TTS) = {perceived:.0f} ms"))
+    else:
+        print(dim("  (run with --with-llm for the REAL perceived first-audio: STT + LLM→TTS)"))
+    print(dim("  Target < 800 ms/turn (ARCHITECTURE.md §9) is realistic only with a GPU."))
 
 
 if __name__ == "__main__":

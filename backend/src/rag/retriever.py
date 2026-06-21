@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 
 from src.rag.embeddings import HybridEmbedder
 from src.rag.reranker import Reranker
@@ -50,8 +51,12 @@ class Retriever:
 
     def retrieve(self, query: str) -> list[ScoredChunk]:
         dense, sparse = self._embedder.embed_query(query)
-        dense_hits = self._store.search_dense(dense, self._candidates)
-        sparse_hits = self._store.search_sparse(sparse, self._candidates)
+        # Dense and sparse searches are independent — run them concurrently.
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            dense_future = pool.submit(self._store.search_dense, dense, self._candidates)
+            sparse_future = pool.submit(self._store.search_sparse, sparse, self._candidates)
+            dense_hits = dense_future.result()
+            sparse_hits = sparse_future.result()
 
         chunks: dict[str, Chunk] = {}
         for hit in (*dense_hits, *sparse_hits):

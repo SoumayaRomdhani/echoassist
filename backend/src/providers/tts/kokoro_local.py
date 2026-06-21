@@ -52,18 +52,36 @@ class KokoroTTS(TTSProvider):
             self._pipeline = KPipeline(lang_code=self._lang_code)
         return self._pipeline
 
-    def _synthesize_sync(self, text: str) -> list[np.ndarray]:
-        pipeline = self._ensure_pipeline()
-        segments: list[np.ndarray] = []
-        for _graphemes, _phonemes, audio in pipeline(text, voice=self._voice, speed=self._speed):
-            # Kokoro returns a torch tensor or numpy array depending on version.
-            array = audio.detach().cpu().numpy() if hasattr(audio, "detach") else np.asarray(audio)
-            segments.append(array.astype(np.float32))
-        return segments
+    @staticmethod
+    def _to_float32(audio) -> np.ndarray:
+        # Kokoro returns a torch tensor or numpy array depending on version.
+        array = audio.detach().cpu().numpy() if hasattr(audio, "detach") else np.asarray(audio)
+        return array.astype(np.float32)
 
     async def synthesize_stream(self, text: str) -> AsyncIterator[AudioChunk]:
         if not text.strip():
             return
-        segments = await asyncio.to_thread(self._synthesize_sync, text)
-        for segment in segments:
-            yield chunk_from_float(segment, _SAMPLE_RATE)
+        # Bridge Kokoro's blocking per-segment generator (worker thread) to async via
+        # a queue, so the FIRST segment is yielded as soon as it's ready — not after
+        # the whole text is synthesized. This is what improves time-to-first-audio.
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+        sentinel = object()
+
+        def produce() -> None:
+            try:
+                segments = self._ensure_pipeline()(text, voice=self._voice, speed=self._speed)
+                for _graphemes, _phonemes, audio in segments:
+                    loop.call_soon_threadsafe(queue.put_nowait, self._to_float32(audio))
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, sentinel)
+
+        worker = loop.run_in_executor(None, produce)
+        try:
+            while True:
+                item = await queue.get()
+                if item is sentinel:
+                    break
+                yield chunk_from_float(item, _SAMPLE_RATE)
+        finally:
+            await worker
