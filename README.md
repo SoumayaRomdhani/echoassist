@@ -15,6 +15,14 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`ROADMAP.md`](ROADMAP.md) for the 
 
 ## Status
 
+### Sprint 4 ✅ Structured notes & summary + Postgres
+- `agent/notes.py`: structured notes via **function calling** (schema in
+  `config/schemas/screening.json`; the 5 factual fields mirror the interview slots,
+  the LLM enriches with strengths / concerns / overall fit).
+- `agent/summary.py`: grounded post-call recruiter summary (no invention).
+- `storage/`: Postgres models + async persistence (campaigns, calls, transcripts,
+  notes, summaries). After a call, notes + summary are written to Postgres.
+
 ### Sprint 3 ✅ Interview flow — full structured screening interview
 - Domain-config **state machine** (`agent/dialogue.py`) reading the YAML flow:
   ordered questions with **slot filling** → grounded Q&A → close.
@@ -110,6 +118,20 @@ python scripts/run_interview.py                          # disclosure -> consent
 The agent leads the structured interview from replayed audio, fills slots,
 answers the candidate's own questions from the knowledge base, and closes —
 printing the filled slots and persisting state to Redis.
+
+## Notes, summary & persistence (Sprint 4)
+
+```bash
+pip install -e ".[storage]"                              # sqlalchemy + psycopg
+docker compose -f ../docker-compose.yml up -d postgres   # host port 5433
+python scripts/gen_test_dialogues.py                     # synthetic transcripts + ground truth
+python scripts/finalize_call.py                          # extract notes + summary -> Postgres
+python -m src.eval.notes_eval                            # notes field accuracy vs ground truth
+```
+
+`run_interview.py` also finalizes at the end of a real call: it extracts the
+structured notes, writes the grounded summary, and persists campaign / call /
+transcript / notes / summary to Postgres.
 
 ## Infrastructure
 

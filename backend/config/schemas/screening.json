@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "screening_notes",
+  "description": "Structured notes captured from a candidate screening call. The five factual fields mirror the interview slots (config/interview_flows/screening.yaml); the rest are recruiter-facing enrichment.",
+  "type": "object",
+  "properties": {
+    "candidate_name": {
+      "type": "string",
+      "description": "Candidate's name if stated during the call, otherwise empty."
+    },
+    "years_experience": {
+      "type": "string",
+      "description": "Years of professional software engineering experience."
+    },
+    "primary_stack": {
+      "type": "string",
+      "description": "Main languages and frameworks the candidate works with."
+    },
+    "availability": {
+      "type": "string",
+      "description": "When the candidate can start."
+    },
+    "remote_setup": {
+      "type": "string",
+      "description": "Remote-work comfort and the candidate's time zone / location."
+    },
+    "salary_expectation": {
+      "type": "string",
+      "description": "Stated salary expectation."
+    },
+    "strengths": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Notable strengths mentioned during the call."
+    },
+    "concerns": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Open questions or potential concerns to flag for the recruiter."
+    },
+    "overall_fit": {
+      "type": "string",
+      "enum": ["strong", "moderate", "weak", "unknown"],
+      "description": "Overall fit for the role based only on what was said."
+    }
+  },
+  "required": [
+    "years_experience",
+    "primary_stack",
+    "availability",
+    "remote_setup",
+    "salary_expectation",
+    "overall_fit"
+  ]
+}

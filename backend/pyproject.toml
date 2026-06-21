@@ -29,6 +29,8 @@ tts-kokoro  = ["kokoro>=0.9"]
 rag = ["qdrant-client>=1.12", "fastembed==0.8.0"]
 # Conversation state (Sprint 3): Redis.
 state = ["redis>=5.0"]
+# Persistence (Sprint 4): Postgres via SQLAlchemy async + psycopg.
+storage = ["sqlalchemy[asyncio]>=2.0", "psycopg[binary]>=3.1"]
 # Recommended Sprint 1 install (open-source STT/TTS + both LLM clients).
 # Default LLM is Ollama (needs the Ollama server + a pulled model); Gemini is the
 # easiest start with no GPU.
@@ -46,11 +48,14 @@ all = [
     "qdrant-client>=1.12",
     "fastembed==0.8.0",
     "redis>=5.0",
+    "sqlalchemy[asyncio]>=2.0",
+    "psycopg[binary]>=3.1",
 ]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.6",
+    "aiosqlite>=0.20",   # in-memory async DB for storage tests
 ]
 
 # Install `config` and `src` as editable packages so scripts/tests import them
