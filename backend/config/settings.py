@@ -151,6 +151,25 @@ class Settings(BaseSettings):
     grounding_min_confidence: float = 0.05
     redact_pii: bool = True                # mask emails/phones before persistence
 
+    # --- Backend API (Sprint 6) ---
+    api_host: str = "0.0.0.0"              # noqa: S104 — bind all interfaces (containerised service)
+    api_port: int = 8000
+    # Comma-separated allowed CORS origins for the dashboard ("*" = any, dev only).
+    api_cors_origins: str = "*"
+
+    # --- Provider failover (Sprint 6, ARCHITECTURE.md §10 — never silent) ---
+    # Secondary LLM tried when the primary fails (quota/transport). None = no failover.
+    llm_fallback_provider: LLMProviderName | None = None
+
+    # --- Observability (Sprint 6) ---
+    # OpenTelemetry tracing. Spans are always created when enabled; how they leave the
+    # process depends on the exporter: an OTLP endpoint (collector/Tempo) if set, else
+    # the console when otel_console_export is on, else dropped (zero overhead, ready to wire).
+    otel_enabled: bool = True
+    otel_service_name: str = "echoassist-backend"
+    otel_exporter_otlp_endpoint: str | None = None   # e.g. http://localhost:4318/v1/traces
+    otel_console_export: bool = False                 # print spans to stdout (noisy; debug only)
+
     # --- Generation / misc ---
     llm_temperature: float = 0.3
     llm_max_tokens: int = 512
@@ -194,9 +213,13 @@ def build_stt(settings: Settings | None = None) -> STTProvider:
     raise NotImplementedError(f"STT provider not yet implemented: {settings.stt_provider.value}")
 
 
-def build_llm(settings: Settings | None = None) -> LLMProvider:
+def build_llm(
+    settings: Settings | None = None, *, provider: LLMProviderName | None = None
+) -> LLMProvider:
+    """Build the active LLM, or a specific ``provider`` (used for failover)."""
     settings = settings or get_settings()
-    if settings.llm_provider is LLMProviderName.gemini:
+    provider = provider or settings.llm_provider
+    if provider is LLMProviderName.gemini:
         from src.providers.llm.gemini import GeminiLLM
 
         return GeminiLLM(
@@ -205,7 +228,7 @@ def build_llm(settings: Settings | None = None) -> LLMProvider:
             temperature=settings.llm_temperature,
             max_tokens=settings.llm_max_tokens,
         )
-    if settings.llm_provider is LLMProviderName.ollama:
+    if provider is LLMProviderName.ollama:
         from src.providers.llm.ollama_local import OllamaLLM
 
         return OllamaLLM(
@@ -214,7 +237,25 @@ def build_llm(settings: Settings | None = None) -> LLMProvider:
             temperature=settings.llm_temperature,
             max_tokens=settings.llm_max_tokens,
         )
-    raise NotImplementedError(f"LLM provider not yet implemented: {settings.llm_provider.value}")
+    raise NotImplementedError(f"LLM provider not yet implemented: {provider.value}")
+
+
+def build_llm_with_failover(settings: Settings | None = None) -> LLMProvider:
+    """Build the primary LLM, wrapped with a fallback when ``llm_fallback_provider`` is set.
+
+    Graceful degradation (ARCHITECTURE.md §10): on a primary failure (quota/transport)
+    the secondary answers; the switch is logged, never silent.
+    """
+    settings = settings or get_settings()
+    primary = build_llm(settings)
+    fallback_name = settings.llm_fallback_provider
+    if fallback_name is None or fallback_name is settings.llm_provider:
+        return primary
+
+    from src.providers.llm.failover import FailoverLLM
+
+    fallback = build_llm(settings, provider=fallback_name)
+    return FailoverLLM(primary, fallback)
 
 
 def build_tts(settings: Settings | None = None) -> TTSProvider:

@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -53,29 +54,49 @@ async def persist_call(
     campaign_name: str,
     domain: str,
     state: ConversationState,
-    notes: dict,
-    summary: str,
+    notes: dict | None,
+    summary: str | None,
     status: str = "completed",
 ) -> Call:
-    """Persist a completed call: the call row, its transcript, notes, and summary."""
-    campaign = await _get_or_create_campaign(session, campaign_name, domain)
-    call = Call(
-        campaign_id=campaign.id,
-        call_id=state.call_id,
-        domain=domain,
-        consent_granted=state.consent_granted,
-        status=status,
-        transcript=[
-            TranscriptTurn(ordinal=i, role=turn["role"], text=turn["text"])
-            for i, turn in enumerate(state.transcript)
-        ],
-        note=Note(data=notes),
-        summary=Summary(text=summary),
-    )
-    session.add(call)
-    await session.commit()
-    log.info(
-        "persisted call_id=%s (%d turns) to campaign '%s'",
-        state.call_id, len(state.transcript), campaign_name,
-    )
-    return call
+    """Persist a call: the call row, its transcript, and (when present) notes + summary.
+
+    ``notes``/``summary`` may be ``None`` for a call that did not finish normally
+    (e.g. consent declined) — the compliance record is still written, just without
+    interview output.
+
+    Concurrency-safe: when two calls create the same (new) campaign at once, the
+    loser hits a unique-constraint violation, rolls back, and finds the committed
+    campaign on the retry.
+    """
+    for attempt in range(2):
+        try:
+            campaign = await _get_or_create_campaign(session, campaign_name, domain)
+            call = Call(
+                campaign_id=campaign.id,
+                call_id=state.call_id,
+                domain=domain,
+                consent_granted=state.consent_granted,
+                status=status,
+                transcript=[
+                    TranscriptTurn(ordinal=i, role=turn["role"], text=turn["text"])
+                    for i, turn in enumerate(state.transcript)
+                ],
+            )
+            if notes is not None:
+                call.note = Note(data=notes)
+            if summary is not None:
+                call.summary = Summary(text=summary)
+            session.add(call)
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            if attempt == 1:
+                raise
+            log.debug("persist_call retrying after campaign creation race")
+            continue
+        log.info(
+            "persisted call_id=%s (%d turns) to campaign '%s'",
+            state.call_id, len(state.transcript), campaign_name,
+        )
+        return call
+    raise AssertionError("unreachable")  # the loop returns or raises

@@ -47,6 +47,30 @@ services:
       timeout: 5s
       retries: 5
 
+  # EchoAssist backend API (Sprint 6). Build with: docker compose up -d --build api
+  api:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      # Point the service at the compose network (not localhost / host 5433).
+      DATABASE_URL: postgresql+psycopg://echoassist:echoassist@postgres:5432/echoassist
+      REDIS_URL: redis://redis:6379
+      QDRANT_URL: http://qdrant:6333
+      # Use Gemini in-container (no GPU). Pass the key from your shell/.env:
+      LLM_PROVIDER: gemini
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      API_PORT: "8000"
+    ports:
+      - "8000:8000"
+
 volumes:
   qdrant_data:
   redis_data:

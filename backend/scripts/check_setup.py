@@ -135,6 +135,21 @@ def check_storage() -> None:
             report(WARN, "Postgres", "unreachable — run: docker compose up -d postgres")
 
 
+def check_api() -> None:
+    s = get_settings()
+    print("\nBackend API (Sprint 6)")
+    for module, label in (("fastapi", "fastapi"), ("uvicorn", "uvicorn"),
+                          ("multipart", "python-multipart")):
+        installed = _installed(module)
+        report(OK if installed else WARN, label, "installed" if installed else "not installed")
+    otel = _installed("opentelemetry")
+    report(OK if otel else WARN, "opentelemetry",
+           "installed" if otel else "not installed (tracing = no-op)")
+    if s.llm_fallback_provider is not None:
+        report(OK, "LLM failover",
+               f"{s.llm_provider.value} -> {s.llm_fallback_provider.value}")
+
+
 async def check_smoke() -> None:
     s = get_settings()
     print("\nSmoke test (loads models — first run downloads weights)")
@@ -176,6 +191,7 @@ async def main() -> None:
     check_rag()
     check_state()
     check_storage()
+    check_api()
     if args.full:
         await check_smoke()
 

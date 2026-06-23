@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -80,3 +80,24 @@ class Summary(Base):
     text: Mapped[str] = mapped_column(Text)
 
     call: Mapped[Call] = relationship(back_populates="summary")
+
+
+class ConsentLog(Base):
+    """Immutable audit trail of consent decisions (ARCHITECTURE.md §10).
+
+    Written the moment consent is captured — before any persistence — and never
+    updated, so the compliance record stands independently of how (or whether) the
+    call row is later finalized. Keyed by the conversation ``call_id`` string (the
+    call row may not exist yet when consent is logged).
+    """
+
+    __tablename__ = "consent_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    call_id: Mapped[str] = mapped_column(String(64))   # conversation uuid (not the FK)
+    domain: Mapped[str] = mapped_column(String(64))
+    decision: Mapped[str] = mapped_column(String(16))  # accepted | refused | ambiguous
+    granted: Mapped[bool] = mapped_column(Boolean)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    __table_args__ = (Index("ix_consent_log_call_id", "call_id"),)
