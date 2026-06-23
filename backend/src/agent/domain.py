@@ -35,6 +35,18 @@ class DomainConfig:
     flow: dict = field(default_factory=dict)
 
 
+def list_available_domains(config_dir: Path) -> list[str]:
+    """Return the domains that have an interview flow under ``config/interview_flows``.
+
+    A domain is config, not code (ARCHITECTURE.md §3): its presence is the
+    existence of ``{domain}.yaml``, so adding a domain needs no code change.
+    """
+    flows_dir = config_dir / "interview_flows"
+    if not flows_dir.exists():
+        return []
+    return sorted(path.stem for path in flows_dir.glob("*.yaml"))
+
+
 def load_domain_config(domain: str, config_dir: Path) -> DomainConfig:
     """Load ``config/interview_flows/{domain}.yaml`` into a :class:`DomainConfig`."""
     path = config_dir / "interview_flows" / f"{domain}.yaml"

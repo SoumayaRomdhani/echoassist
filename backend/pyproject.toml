@@ -31,6 +31,23 @@ rag = ["qdrant-client>=1.12", "fastembed==0.8.0"]
 state = ["redis>=5.0"]
 # Persistence (Sprint 4): Postgres via SQLAlchemy async + psycopg.
 storage = ["sqlalchemy[asyncio]>=2.0", "psycopg[binary]>=3.1"]
+# Backend API (Sprint 6): FastAPI REST + WebSocket. python-multipart powers file
+# upload; websockets is uvicorn's WS implementation.
+api = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",
+    "websockets>=12",
+]
+# Observability (Sprint 6): OpenTelemetry tracing. Optional — the tracing helpers
+# degrade to a no-op when this extra is not installed. The SDK includes the console
+# exporter; OTLP export (to a collector/Tempo) is a separate extra because its proto
+# dependency pins protobuf, which we keep out of the default install.
+observability = [
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-api>=1.27",
+]
+observability-otlp = ["opentelemetry-exporter-otlp-proto-http>=1.27"]
 # Recommended Sprint 1 install (open-source STT/TTS + both LLM clients).
 # Default LLM is Ollama (needs the Ollama server + a pulled model); Gemini is the
 # easiest start with no GPU.
@@ -50,12 +67,19 @@ all = [
     "redis>=5.0",
     "sqlalchemy[asyncio]>=2.0",
     "psycopg[binary]>=3.1",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",
+    "websockets>=12",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-api>=1.27",
 ]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.6",
     "aiosqlite>=0.20",   # in-memory async DB for storage tests
+    "httpx>=0.27",       # ASGI test client for the API (Sprint 6)
 ]
 
 # Install `config` and `src` as editable packages so scripts/tests import them
@@ -71,6 +95,10 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency-injection markers are called in argument defaults by design.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.File"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

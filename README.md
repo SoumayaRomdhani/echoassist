@@ -15,6 +15,24 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`ROADMAP.md`](ROADMAP.md) for the 
 
 ## Status
 
+### Sprint 6 ✅ Backend API + observability
+- **FastAPI** REST (`api/`): campaigns, calls, notes, summaries, domains, and
+  document upload (which triggers RAG re-ingest). `POST /calls` runs a screening
+  call in the background.
+- **WebSocket** (`api/ws.py`): live call status + transcript streamed per call
+  (in-process event hub with replay so a late subscriber still sees the start).
+- **OpenTelemetry** tracing (`observability/tracing.py`): spans per stage + per
+  request; console/OTLP exporter, off by default (degrades to a no-op without the
+  extra). Point `OTEL_EXPORTER_OTLP_ENDPOINT` at a collector/Tempo to export.
+- **Graceful degradation**: `providers/llm/failover.py` fails the LLM over to a
+  secondary on quota/transport errors — logged + surfaced on the live stream,
+  never silent.
+- **Compliance**: consent is captured and written to an immutable audit log
+  before persistence.
+- **Concurrency**: shared providers built once; the non-reentrant CPU models
+  (Whisper/Kokoro) are serialized behind one lock. Tested under N concurrent calls.
+- **Containerized**: `backend/Dockerfile` + an `api` service in `docker-compose.yml`.
+
 ### Sprint 5 ✅ Latency & quality hardening
 - `agent/guardrails.py`: **grounding gate** (low reranker confidence → the agent
   refuses instead of answering outside the knowledge base) + **PII redaction**
@@ -153,6 +171,37 @@ python -m src.eval.grounding_eval         # grounding-gate calibration EN/FR (lo
 The grounding gate is enforced in `ask.py` / the interview: an off-topic question
 (reranker confidence below `GROUNDING_MIN_CONFIDENCE`) is refused rather than
 answered. PII (emails/phones) is redacted before anything is written to Postgres.
+
+## Backend API & live updates (Sprint 6)
+
+```bash
+pip install -e ".[api,observability]"                    # fastapi + uvicorn + opentelemetry
+docker compose -f ../docker-compose.yml up -d postgres redis qdrant
+python scripts/serve.py                                  # http://localhost:8000  (OpenAPI at /docs)
+```
+
+```bash
+# Start a screening call and watch it live (replayed audio drives the pipeline):
+curl -s -X POST localhost:8000/calls -H "content-type: application/json" -d "{}"
+# -> {"call_id":"…","status":"started","ws_url":"/ws/calls/…"}
+# Connect a WebSocket to ws_url for live status + transcript, then read the result:
+curl -s localhost:8000/calls/<call_id>            # transcript + notes + summary
+curl -s localhost:8000/calls/<call_id>/consent    # consent audit trail
+```
+
+Run the whole API in a container (depends on the data services):
+
+```bash
+GEMINI_API_KEY=... docker compose up -d --build api      # serves on :8000
+```
+
+Provider failover and tracing are env-driven (no code change):
+
+```ini
+# backend/.env
+LLM_FALLBACK_PROVIDER=ollama                 # secondary LLM if the primary fails
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces   # export spans (needs .[observability-otlp])
+```
 
 ## Infrastructure
 
