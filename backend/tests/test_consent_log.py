@@ -34,6 +34,27 @@ async def test_consent_is_logged_and_retrievable() -> None:
 
 
 @pytest.mark.asyncio
+async def test_init_db_adds_missing_disclosure_hash_column() -> None:
+    # A table from before disclosure_hash existed: create_all won't alter it, so
+    # init_db's additive migration must add the column (else the first insert fails).
+    engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
+    async with engine.begin() as conn:
+        await conn.exec_driver_sql(
+            "CREATE TABLE consent_log (id INTEGER PRIMARY KEY, call_id VARCHAR(64), "
+            "domain VARCHAR(64), decision VARCHAR(16), granted BOOLEAN, created_at DATETIME)"
+        )
+    await init_db(engine)
+
+    async with make_sessionmaker(engine)() as db:
+        entry = await log_consent(
+            db, call_id="c1", domain="screening", decision="accepted", granted=True,
+            disclosure_hash="b" * 64,
+        )
+        assert entry.disclosure_hash == "b" * 64   # column present -> insert succeeds
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_consent_log_records_disclosure_hash() -> None:
     sessionmaker, engine = await _sessionmaker()
     async with sessionmaker() as db:
