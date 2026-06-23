@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -33,10 +33,31 @@ def make_sessionmaker(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(engine, expire_on_commit=False)
 
 
+# Additive, idempotent schema patches for tables that already exist from an earlier
+# version (create_all only CREATEs missing tables, it never ALTERs). This is a
+# lightweight stand-in for a migration tool — a real deployment should adopt Alembic.
+# Each entry: (table, column, "TYPE" used in ADD COLUMN).
+_ADDITIVE_COLUMNS = (
+    ("consent_log", "disclosure_hash", "VARCHAR(64)"),
+)
+
+
+def _apply_additive_migrations(conn) -> None:
+    inspector = inspect(conn)
+    for table, column, coltype in _ADDITIVE_COLUMNS:
+        if not inspector.has_table(table):
+            continue   # create_all just made it (with the column) — nothing to patch
+        columns = {c["name"] for c in inspector.get_columns(table)}
+        if column not in columns:
+            log.info("migrating: ADD COLUMN %s.%s", table, column)
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}"))
+
+
 async def init_db(engine: AsyncEngine) -> None:
-    """Create tables if they do not exist."""
+    """Create missing tables, then apply additive column migrations to existing ones."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_apply_additive_migrations)
 
 
 async def _get_or_create_campaign(session: AsyncSession, name: str, domain: str) -> Campaign:
