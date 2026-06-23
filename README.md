@@ -174,26 +174,53 @@ answered. PII (emails/phones) is redacted before anything is written to Postgres
 
 ## Backend API & live updates (Sprint 6)
 
-```bash
+```powershell
+cd backend
 pip install -e ".[api,observability]"                    # fastapi + uvicorn + opentelemetry
-docker compose -f ../docker-compose.yml up -d postgres redis qdrant
-python scripts/serve.py                                  # http://localhost:8000  (OpenAPI at /docs)
+docker compose -f ..\docker-compose.yml up -d postgres redis qdrant
+python scripts\serve.py                                  # http://localhost:8000  (OpenAPI at /docs)
 ```
 
-```bash
-# Start a screening call and watch it live (replayed audio drives the pipeline):
-curl -s -X POST localhost:8000/calls -H "content-type: application/json" -d "{}"
-# -> {"call_id":"…","status":"started","ws_url":"/ws/calls/…"}
-# Connect a WebSocket to ws_url for live status + transcript, then read the result:
-curl -s localhost:8000/calls/<call_id>            # transcript + notes + summary
-curl -s localhost:8000/calls/<call_id>/consent    # consent audit trail
+> **Windows:** run `scripts\serve.py` (it sets the Selector event loop psycopg needs).
+> `uvicorn --reload` uses the ProactorEventLoop and will fail on Postgres.
+
+Test the API from PowerShell (`Invoke-RestMethod`, since `curl` is an alias there):
+
+```powershell
+Invoke-RestMethod http://localhost:8000/health
+Invoke-RestMethod http://localhost:8000/ready          # database + redis + qdrant health
+Invoke-RestMethod http://localhost:8000/domains
+
+# Start a screening call (replayed audio drives the pipeline) and read the result:
+$call = Invoke-RestMethod -Method Post http://localhost:8000/calls `
+          -ContentType application/json -Body '{"consent": true}'
+Invoke-RestMethod "http://localhost:8000/calls/$($call.call_id)"          # transcript + notes + summary
+Invoke-RestMethod "http://localhost:8000/calls/$($call.call_id)/consent"  # consent audit trail (+ disclosure hash)
+
+# Upload a knowledge-base document (md/txt only) -> re-indexes the domain.
+# (curl.exe handles multipart; Windows PowerShell 5.1 has no Invoke-RestMethod -Form.)
+curl.exe -s -X POST http://localhost:8000/domains/screening/documents `
+  -F "file=@data/docs/screening/compensation_and_benefits.md;type=text/markdown"
 ```
 
-Run the whole API in a container (depends on the data services):
+Live status + transcript stream over the WebSocket at `ws://localhost:8000/ws/calls/{call_id}`.
 
-```bash
-GEMINI_API_KEY=... docker compose up -d --build api      # serves on :8000
-```
+### Docker — two modes
+
+| Mode | What it runs | `POST /calls` | Command |
+|---|---|---|---|
+| **light** (default) | data/API + RAG ingest + WebSocket + Gemini | **503** (no local models) | `docker compose up -d --build api` → `:8000` |
+| **voice** (optional, heavy) | adds Whisper + Kokoro for in-container replay calls | works | `docker compose --profile voice up -d --build api-voice` → `:8001` |
+
+Pass `GEMINI_API_KEY` from your shell/`.env`. Uploaded documents persist in the `docs_data`
+volume across rebuilds (the demo docs are seeded on first start, not masked).
+
+### Notes & limits (dev defaults)
+
+- **Auth:** none yet — ACTEEK **SSO lands in Sprint 7**. CORS defaults to `*`. Both are
+  **development-only**; do not expose this API publicly as-is.
+- **Document upload** accepts **`.md` / `.txt` only** (other types → `400`). PDF/DOCX are out
+  of scope for Sprint 6.
 
 Provider failover and tracing are env-driven (no code change):
 

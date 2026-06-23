@@ -133,6 +133,7 @@ class ConsentLogOut(BaseModel):
     domain: str
     decision: str
     granted: bool
+    disclosure_hash: str | None
     created_at: datetime
 
     @classmethod
@@ -142,6 +143,7 @@ class ConsentLogOut(BaseModel):
             domain=entry.domain,
             decision=entry.decision,
             granted=entry.granted,
+            disclosure_hash=entry.disclosure_hash,
             created_at=entry.created_at,
         )
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 
+from src.observability.tracing import span
 from src.providers.types import AudioChunk, Transcript
 
 
@@ -31,11 +32,13 @@ class STTProvider(ABC):
     async def transcribe(self, audio: AudioChunk | AsyncIterator[AudioChunk]) -> Transcript:
         """Convenience: transcribe a whole utterance and return the final transcript."""
         stream = audio.__aiter__() if hasattr(audio, "__aiter__") else _as_stream(audio)  # type: ignore[arg-type]
-        final = Transcript(text="")
-        async for t in self.transcribe_stream(stream):  # type: ignore[arg-type]
-            if t.is_final:
-                final = t
-        return final
+        # Stage span — no transcript text in attributes (it is PII).
+        with span("stt.transcribe"):
+            final = Transcript(text="")
+            async for t in self.transcribe_stream(stream):  # type: ignore[arg-type]
+                if t.is_final:
+                    final = t
+            return final
 
     async def aclose(self) -> None:  # noqa: B027 — optional override hook, default no-op
         """Release any held resources. Override if needed."""

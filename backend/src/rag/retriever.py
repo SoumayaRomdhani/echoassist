@@ -14,6 +14,7 @@ import logging
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
+from src.observability.tracing import span
 from src.rag.embeddings import HybridEmbedder
 from src.rag.reranker import Reranker
 from src.rag.types import Chunk, ScoredChunk
@@ -50,6 +51,11 @@ class Retriever:
         self._rrf_k = rrf_k
 
     def retrieve(self, query: str) -> list[ScoredChunk]:
+        # Stage span — never put the query text in attributes (it can carry PII).
+        with span("rag.retrieve", **{"rag.top_k": self._top_k}):
+            return self._retrieve(query)
+
+    def _retrieve(self, query: str) -> list[ScoredChunk]:
         dense, sparse = self._embedder.embed_query(query)
         # Dense and sparse searches are independent — run them concurrently.
         with ThreadPoolExecutor(max_workers=2) as pool:

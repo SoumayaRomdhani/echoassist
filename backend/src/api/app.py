@@ -54,6 +54,8 @@ def create_app(resources: AppResources | None = None) -> FastAPI:
     app = FastAPI(title="EchoAssist API", version=API_VERSION, lifespan=lifespan)
     app.state.resources = resources if resources is not None else build_resources(settings)
 
+    # Dev defaults: CORS is open and there is no auth. ACTEEK SSO is integrated in
+    # Sprint 7 (ARCHITECTURE.md §2 — do not rebuild auth); do not expose this publicly as-is.
     origins = [o.strip() for o in settings.api_cors_origins.split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,

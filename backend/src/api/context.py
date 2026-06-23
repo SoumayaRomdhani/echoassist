@@ -13,14 +13,19 @@ the data-serving API (and the test suite) starts without loading a model.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import logging
+import threading
 from dataclasses import dataclass
+from pathlib import Path
 
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from config.settings import (
     Settings,
+    STTProviderName,
+    TTSProviderName,
     build_embedder,
     build_engine,
     build_llm,
@@ -40,7 +45,13 @@ from src.agent.orchestrator import VoicePipeline
 from src.agent.state import ConversationState, StateStore
 from src.api.events import CallEventHub
 from src.api.ingest_service import IngestService, default_indexer
-from src.api.runner import AudioInput, CallEngine, CallManager, current_call_id
+from src.api.runner import (
+    AudioInput,
+    CallEngine,
+    CallManager,
+    VoiceUnavailable,
+    current_call_id,
+)
 from src.audio.io import stream_wav
 from src.providers.concurrency import SerializedSTT, SerializedTTS
 from src.providers.errors import ProviderError
@@ -53,6 +64,7 @@ log = logging.getLogger("echoassist.api.context")
 
 # Caller audio replayed for a server-started call (same clips as run_interview).
 _CONSENT_CLIP = "sample_consent.wav"
+_DECLINE_CLIP = "sample_decline.wav"   # a clear "no" to the consent question
 _ANSWER_CLIPS = (
     "interview_question.wav",   # a mid-question detour (grounded Q&A)
     "interview_experience.wav",
@@ -63,6 +75,30 @@ _ANSWER_CLIPS = (
     "interview_done.wav",
 )
 
+# Python import name of each local-model provider's dependency (for the preflight).
+_STT_DEP = {STTProviderName.whisper_local: "faster_whisper"}
+_TTS_DEP = {TTSProviderName.kokoro: "kokoro"}
+
+
+def _is_installed(module: str) -> bool:
+    try:
+        return importlib.util.find_spec(module) is not None
+    except ModuleNotFoundError:
+        return False
+
+
+def missing_voice_deps(settings: Settings) -> list[str]:
+    """Return the local STT/TTS dependencies the active providers need but lack.
+
+    Used to fail ``POST /calls`` fast with a 503 in the light (data-only) image,
+    which ships without the heavy Whisper/Kokoro models.
+    """
+    missing = []
+    for dep in (_STT_DEP.get(settings.stt_provider), _TTS_DEP.get(settings.tts_provider)):
+        if dep and not _is_installed(dep):
+            missing.append(dep)
+    return missing
+
 
 class ProviderPool:
     """Builds and caches the shared, expensive providers (lazily)."""
@@ -70,6 +106,9 @@ class ProviderPool:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._model_lock = asyncio.Lock()   # serializes all CPU model work (STT/TTS/ingest)
+        # Guards lazy construction: builders run in worker threads (pipelines are built
+        # off the event loop), so concurrent first-calls must not race the caches.
+        self._build_lock = threading.Lock()
         self._llm: LLMProvider | None = None
         self._stt: STTProvider | None = None
         self._tts: TTSProvider | None = None
@@ -85,42 +124,47 @@ class ProviderPool:
         self._on_degrade = hook
 
     def llm(self) -> LLMProvider:
-        if self._llm is None:
-            primary = build_llm(self._settings)
-            fallback = self._settings.llm_fallback_provider
-            if fallback is not None and fallback is not self._settings.llm_provider:
-                from src.providers.llm.failover import FailoverLLM
+        with self._build_lock:
+            if self._llm is None:
+                primary = build_llm(self._settings)
+                fallback = self._settings.llm_fallback_provider
+                if fallback is not None and fallback is not self._settings.llm_provider:
+                    from src.providers.llm.failover import FailoverLLM
 
-                self._llm = FailoverLLM(
-                    primary,
-                    build_llm(self._settings, provider=fallback),
-                    on_degrade=self._on_degrade,
-                )
-                log.info("LLM failover enabled: %s -> %s",
-                         self._settings.llm_provider.value, fallback.value)
-            else:
-                self._llm = primary
-        return self._llm
+                    self._llm = FailoverLLM(
+                        primary,
+                        build_llm(self._settings, provider=fallback),
+                        on_degrade=self._on_degrade,
+                    )
+                    log.info("LLM failover enabled: %s -> %s",
+                             self._settings.llm_provider.value, fallback.value)
+                else:
+                    self._llm = primary
+            return self._llm
 
     def stt(self) -> STTProvider:
-        if self._stt is None:
-            self._stt = SerializedSTT(build_stt(self._settings), self._model_lock)
-        return self._stt
+        with self._build_lock:
+            if self._stt is None:
+                self._stt = SerializedSTT(build_stt(self._settings), self._model_lock)
+            return self._stt
 
     def tts(self) -> TTSProvider:
-        if self._tts is None:
-            self._tts = SerializedTTS(build_tts(self._settings), self._model_lock)
-        return self._tts
+        with self._build_lock:
+            if self._tts is None:
+                self._tts = SerializedTTS(build_tts(self._settings), self._model_lock)
+            return self._tts
 
     def retriever(self, domain: str):
-        if domain not in self._retrievers:
-            self._retrievers[domain] = build_retriever(self._settings, domain=domain)
-        return self._retrievers[domain]
+        with self._build_lock:
+            if domain not in self._retrievers:
+                self._retrievers[domain] = build_retriever(self._settings, domain=domain)
+            return self._retrievers[domain]
 
     def embedder(self):
-        if self._embedder is None:
-            self._embedder = build_embedder(self._settings)
-        return self._embedder
+        with self._build_lock:
+            if self._embedder is None:
+                self._embedder = build_embedder(self._settings)
+            return self._embedder
 
     def vector_store(self, domain: str):
         return build_vector_store(self._settings, domain=domain)
@@ -139,6 +183,14 @@ class DefaultCallEngine(CallEngine):
         self._pool = pool
         self._config_dir = settings.config_dir
         self._audio_dir = settings.data_dir / "test_audio"
+
+    def preflight(self) -> None:
+        missing = missing_voice_deps(self._settings)
+        if missing:
+            raise VoiceUnavailable(
+                f"voice models not installed in this image ({', '.join(missing)}); "
+                "start the 'voice' Docker profile or run a host install with .[all]"
+            )
 
     def default_domain(self) -> str:
         return self._settings.domain
@@ -167,10 +219,12 @@ class DefaultCallEngine(CallEngine):
         return VoicePipeline(self._pool.stt(), llm, self._pool.tts(), domain_cfg, dialogue=dialogue)
 
     def consent_audio(self, *, consent: bool) -> AudioInput:
-        # The bundled clip consents; simulating a refusal needs a "no" clip (tests do this).
-        if not consent:
-            log.warning("consent=False requested but no refusal clip bundled; using consent clip")
-        return stream_wav(self._audio_dir / _CONSENT_CLIP, realtime=False)
+        return stream_wav(self._consent_clip(consent), realtime=False)
+
+    def _consent_clip(self, consent: bool) -> Path:
+        # consent=True plays the "yes" clip; consent=False plays the bundled "no" clip,
+        # so a server-started call can actually exercise the decline path.
+        return self._audio_dir / (_CONSENT_CLIP if consent else _DECLINE_CLIP)
 
     def answer_audios(self, domain_cfg: DomainConfig) -> list[AudioInput]:
         return [stream_wav(self._audio_dir / name, realtime=False) for name in _ANSWER_CLIPS]

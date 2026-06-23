@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 
+from src.observability.tracing import span
 from src.providers.types import AudioChunk, AudioFormat
 
 
@@ -29,10 +30,12 @@ class TTSProvider(ABC):
 
     async def synthesize(self, text: str) -> AudioChunk:
         """Convenience: synthesize the whole text into a single concatenated chunk."""
-        buffer = bytearray()
-        async for chunk in self.synthesize_stream(text):
-            buffer.extend(chunk.data)
-        return AudioChunk(data=bytes(buffer), fmt=self.output_format)
+        # Stage span — no spoken text in attributes (it can carry PII).
+        with span("tts.synthesize"):
+            buffer = bytearray()
+            async for chunk in self.synthesize_stream(text):
+                buffer.extend(chunk.data)
+            return AudioChunk(data=bytes(buffer), fmt=self.output_format)
 
     async def aclose(self) -> None:  # noqa: B027 — optional override hook, default no-op
         """Release any held resources. Override if needed."""
