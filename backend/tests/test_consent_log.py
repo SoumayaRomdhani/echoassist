@@ -34,6 +34,20 @@ async def test_consent_is_logged_and_retrievable() -> None:
 
 
 @pytest.mark.asyncio
+async def test_consent_log_records_disclosure_hash() -> None:
+    sessionmaker, engine = await _sessionmaker()
+    async with sessionmaker() as db:
+        await log_consent(
+            db, call_id="c1", domain="screening", decision="accepted", granted=True,
+            disclosure_hash="a" * 64,
+        )
+    async with sessionmaker() as db:
+        entries = await list_consent(db, "c1")
+    assert entries[0].disclosure_hash == "a" * 64
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_consent_log_is_append_only_and_ordered() -> None:
     sessionmaker, engine = await _sessionmaker()
     async with sessionmaker() as db:

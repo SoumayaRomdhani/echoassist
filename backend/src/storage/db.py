@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from src.agent.state import ConversationState
+from src.observability.tracing import span
 from src.storage.models import Base, Call, Campaign, Note, Summary, TranscriptTurn
 
 log = logging.getLogger("echoassist.storage")
@@ -68,35 +69,37 @@ async def persist_call(
     loser hits a unique-constraint violation, rolls back, and finds the committed
     campaign on the retry.
     """
-    for attempt in range(2):
-        try:
-            campaign = await _get_or_create_campaign(session, campaign_name, domain)
-            call = Call(
-                campaign_id=campaign.id,
-                call_id=state.call_id,
-                domain=domain,
-                consent_granted=state.consent_granted,
-                status=status,
-                transcript=[
-                    TranscriptTurn(ordinal=i, role=turn["role"], text=turn["text"])
-                    for i, turn in enumerate(state.transcript)
-                ],
+    # Stage span — call_id is a uuid and domain an enum value; neither is PII.
+    with span("db.persist", **{"db.call_id": state.call_id, "db.domain": domain}):
+        for attempt in range(2):
+            try:
+                campaign = await _get_or_create_campaign(session, campaign_name, domain)
+                call = Call(
+                    campaign_id=campaign.id,
+                    call_id=state.call_id,
+                    domain=domain,
+                    consent_granted=state.consent_granted,
+                    status=status,
+                    transcript=[
+                        TranscriptTurn(ordinal=i, role=turn["role"], text=turn["text"])
+                        for i, turn in enumerate(state.transcript)
+                    ],
+                )
+                if notes is not None:
+                    call.note = Note(data=notes)
+                if summary is not None:
+                    call.summary = Summary(text=summary)
+                session.add(call)
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                if attempt == 1:
+                    raise
+                log.debug("persist_call retrying after campaign creation race")
+                continue
+            log.info(
+                "persisted call_id=%s (%d turns) to campaign '%s'",
+                state.call_id, len(state.transcript), campaign_name,
             )
-            if notes is not None:
-                call.note = Note(data=notes)
-            if summary is not None:
-                call.summary = Summary(text=summary)
-            session.add(call)
-            await session.commit()
-        except IntegrityError:
-            await session.rollback()
-            if attempt == 1:
-                raise
-            log.debug("persist_call retrying after campaign creation race")
-            continue
-        log.info(
-            "persisted call_id=%s (%d turns) to campaign '%s'",
-            state.call_id, len(state.transcript), campaign_name,
-        )
-        return call
+            return call
     raise AssertionError("unreachable")  # the loop returns or raises

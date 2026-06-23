@@ -93,10 +93,19 @@ async def get_call(session: AsyncSession, call_id: str) -> Call | None:
 
 # --- Consent log (ARCHITECTURE.md §10) ------------------------------------- #
 async def log_consent(
-    session: AsyncSession, *, call_id: str, domain: str, decision: str, granted: bool
+    session: AsyncSession,
+    *,
+    call_id: str,
+    domain: str,
+    decision: str,
+    granted: bool,
+    disclosure_hash: str | None = None,
 ) -> ConsentLog:
     """Append an immutable consent record and commit it immediately."""
-    entry = ConsentLog(call_id=call_id, domain=domain, decision=decision, granted=granted)
+    entry = ConsentLog(
+        call_id=call_id, domain=domain, decision=decision, granted=granted,
+        disclosure_hash=disclosure_hash,
+    )
     session.add(entry)
     await session.commit()
     return entry

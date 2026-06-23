@@ -10,6 +10,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.observability.tracing import span
 from src.rag.chunking import chunk_text
 from src.rag.embeddings import HybridEmbedder
 from src.rag.types import Chunk, EmbeddedChunk
@@ -63,16 +64,19 @@ def ingest(
     recreate: bool = True,
 ) -> IngestReport:
     """Index every document in ``docs_dir`` into the vector store."""
-    docs = load_documents(docs_dir)
-    chunks = build_chunks(docs, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-    log.info("Ingesting %d documents -> %d chunks", len(docs), len(chunks))
+    with span("rag.ingest"):
+        docs = load_documents(docs_dir)
+        chunks = build_chunks(docs, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        log.info("Ingesting %d documents -> %d chunks", len(docs), len(chunks))
 
-    store.ensure_collection(embedder.dense_dim, recreate=recreate)
-    vectors = embedder.embed_documents([c.text for c in chunks])
-    embedded = [
-        EmbeddedChunk(c, dense, sparse)
-        for c, (dense, sparse) in zip(chunks, vectors, strict=True)
-    ]
-    store.upsert(embedded)
+        store.ensure_collection(embedder.dense_dim, recreate=recreate)
+        vectors = embedder.embed_documents([c.text for c in chunks])
+        embedded = [
+            EmbeddedChunk(c, dense, sparse)
+            for c, (dense, sparse) in zip(chunks, vectors, strict=True)
+        ]
+        store.upsert(embedded)
 
-    return IngestReport(documents=len(docs), chunks=len(chunks), collection_count=store.count())
+        return IngestReport(
+            documents=len(docs), chunks=len(chunks), collection_count=store.count()
+        )

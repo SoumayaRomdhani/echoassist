@@ -21,10 +21,13 @@ async def test_root_and_health(client) -> None:
     assert health.status_code == 200 and health.json()["status"] == "ok"
 
 
-async def test_ready_reports_database_ok(client) -> None:
+async def test_ready_reports_component_health(client) -> None:
     body = (await client.get("/ready")).json()
-    assert body["status"] == "ok"
+    # Database is in-memory SQLite (always ok); Qdrant is probed too (env-dependent),
+    # so assert on the components map rather than the aggregate status.
     assert body["components"]["database"] == "ok"
+    assert "qdrant" in body["components"]
+    assert body["status"] in ("ok", "degraded")
 
 
 async def test_list_and_get_domains(client) -> None:
@@ -66,6 +69,7 @@ async def test_call_lifecycle_persists_and_is_served(client, resources) -> None:
     consent = (await client.get(f"/calls/{call_id}/consent")).json()
     assert [c["decision"] for c in consent] == ["accepted"]
     assert consent[0]["granted"] is True
+    assert len(consent[0]["disclosure_hash"]) == 64   # sha256 of the spoken disclosure
 
 
 async def test_declined_call_is_recorded_without_notes(client, resources) -> None:
@@ -89,6 +93,36 @@ async def test_start_call_endpoint_returns_202_with_ws_url(client) -> None:
     assert response.status_code == 202
     body = response.json()
     assert body["ws_url"] == f"/ws/calls/{body['call_id']}"
+
+
+async def test_default_engine_consent_clip_selection() -> None:
+    # The production engine must honor the consent flag: a refusal plays the "no" clip,
+    # so a server-started call can actually reach the declined path.
+    from src.api.context import DefaultCallEngine, ProviderPool
+    from tests.conftest import make_settings
+
+    settings = make_settings()
+    engine = DefaultCallEngine(settings, ProviderPool(settings))
+    assert engine._consent_clip(consent=True).name == "sample_consent.wav"
+    assert engine._consent_clip(consent=False).name == "sample_decline.wav"
+
+
+async def test_start_call_503_when_voice_models_missing(sqlite_engine) -> None:
+    # Light (data-only) image: POST /calls must fail fast with a clear 503.
+    from httpx import ASGITransport, AsyncClient
+
+    from src.api.app import create_app
+    from tests.conftest import make_resources
+
+    resources = make_resources(sqlite_engine, preflight_error="voice models not installed")
+    transport = ASGITransport(app=create_app(resources))
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as http:
+            response = await http.post("/calls", json={"consent": True})
+        assert response.status_code == 503
+        assert "voice models" in response.json()["detail"]
+    finally:
+        await resources.call_manager.aclose()
 
 
 async def test_call_status_falls_back_to_persisted_record(client, resources) -> None:

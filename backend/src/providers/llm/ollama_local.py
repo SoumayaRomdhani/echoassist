@@ -11,6 +11,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 
+from src.observability.tracing import span
 from src.providers.llm.base import LLMProvider
 from src.providers.types import LLMResponse, Message, Role, ToolCall, ToolSpec
 
@@ -66,12 +67,13 @@ class OllamaLLM(LLMProvider):
     async def chat(
         self, messages: list[Message], tools: list[ToolSpec] | None = None
     ) -> LLMResponse:
-        response = await self._client.chat(
-            model=self._model,
-            messages=_to_ollama_messages(messages),
-            tools=_to_ollama_tools(tools) if tools else None,
-            options=self._options,
-        )
+        with span("llm.chat", **{"llm.provider": "ollama", "llm.model": self._model}):
+            response = await self._client.chat(
+                model=self._model,
+                messages=_to_ollama_messages(messages),
+                tools=_to_ollama_tools(tools) if tools else None,
+                options=self._options,
+            )
         message = response["message"]
         tool_calls = [
             ToolCall(
@@ -90,16 +92,17 @@ class OllamaLLM(LLMProvider):
     async def chat_stream(
         self, messages: list[Message], tools: list[ToolSpec] | None = None
     ) -> AsyncIterator[str]:
-        stream = await self._client.chat(
-            model=self._model,
-            messages=_to_ollama_messages(messages),
-            options=self._options,
-            stream=True,
-        )
-        async for chunk in stream:
-            piece = chunk.get("message", {}).get("content")
-            if piece:
-                yield piece
+        with span("llm.chat_stream", **{"llm.provider": "ollama", "llm.model": self._model}):
+            stream = await self._client.chat(
+                model=self._model,
+                messages=_to_ollama_messages(messages),
+                options=self._options,
+                stream=True,
+            )
+            async for chunk in stream:
+                piece = chunk.get("message", {}).get("content")
+                if piece:
+                    yield piece
 
 
 def _as_dict(arguments) -> dict:

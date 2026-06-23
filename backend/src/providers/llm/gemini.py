@@ -11,6 +11,7 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
+from src.observability.tracing import span
 from src.providers.errors import ProviderConfigError, ProviderError, ProviderQuotaError
 from src.providers.llm.base import LLMProvider
 from src.providers.types import LLMResponse, Message, Role, ToolCall, ToolSpec
@@ -157,14 +158,15 @@ class GeminiLLM(LLMProvider):
         from google.genai import types
 
         system_instruction, contents = _build_contents(messages, types)
-        try:
-            response = await self._client.aio.models.generate_content(
-                model=self._model,
-                contents=contents,
-                config=self._config(types, system_instruction, tools),
-            )
-        except genai_errors.APIError as exc:
-            raise _to_provider_error(exc) from exc
+        with span("llm.chat", **{"llm.provider": "gemini", "llm.model": self._model}):
+            try:
+                response = await self._client.aio.models.generate_content(
+                    model=self._model,
+                    contents=contents,
+                    config=self._config(types, system_instruction, tools),
+                )
+            except genai_errors.APIError as exc:
+                raise _to_provider_error(exc) from exc
         tool_calls = [
             ToolCall(
                 id=getattr(fc, "id", None) or f"{fc.name}-{i}",
@@ -181,11 +183,12 @@ class GeminiLLM(LLMProvider):
         from google.genai import types
 
         system_instruction, contents = _build_contents(messages, types)
-        stream = await self._client.aio.models.generate_content_stream(
-            model=self._model,
-            contents=contents,
-            config=self._config(types, system_instruction, tools),
-        )
-        async for chunk in stream:
-            if chunk.text:
-                yield chunk.text
+        with span("llm.chat_stream", **{"llm.provider": "gemini", "llm.model": self._model}):
+            stream = await self._client.aio.models.generate_content_stream(
+                model=self._model,
+                contents=contents,
+                config=self._config(types, system_instruction, tools),
+            )
+            async for chunk in stream:
+                if chunk.text:
+                    yield chunk.text

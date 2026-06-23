@@ -47,7 +47,8 @@ services:
       timeout: 5s
       retries: 5
 
-  # EchoAssist backend API (Sprint 6). Build with: docker compose up -d --build api
+  # EchoAssist backend API — LIGHT image (default). Serves data/API/RAG/WebSocket;
+  # POST /calls returns 503 (no local STT/TTS). Build: docker compose up -d --build api
   api:
     build:
       context: ./backend
@@ -68,10 +69,43 @@ services:
       LLM_PROVIDER: gemini
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       API_PORT: "8000"
+    volumes:
+      # Persist uploaded documents across rebuilds (demo docs are seeded on first start).
+      - docs_data:/app/data/docs
     ports:
       - "8000:8000"
+
+  # EchoAssist backend API — VOICE image (optional, heavy). Adds Whisper + Kokoro so
+  # replay calls run in-container. Start with:
+  #   docker compose --profile voice up -d --build api-voice   ->  http://localhost:8001
+  api-voice:
+    profiles: ["voice"]
+    build:
+      context: ./backend
+      args:
+        PIP_EXTRAS: "all"
+    restart: unless-stopped
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://echoassist:echoassist@postgres:5432/echoassist
+      REDIS_URL: redis://redis:6379
+      QDRANT_URL: http://qdrant:6333
+      LLM_PROVIDER: gemini
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      API_PORT: "8000"
+    volumes:
+      - docs_data:/app/data/docs
+    ports:
+      - "8001:8000"
 
 volumes:
   qdrant_data:
   redis_data:
   postgres_data:
+  docs_data:

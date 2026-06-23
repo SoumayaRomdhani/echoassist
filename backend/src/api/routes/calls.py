@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from src.api.context import AppResources, get_resources
+from src.api.runner import VoiceUnavailable
 from src.api.schemas import (
     CallDetailOut,
     CallListOut,
@@ -26,6 +27,10 @@ async def start_call(
     body: StartCallRequest, resources: AppResources = Depends(get_resources)
 ) -> StartCallResponse:
     """Start a screening call in the background; subscribe to ``ws_url`` for live updates."""
+    try:
+        resources.call_manager.preflight()   # voice models present? (light image → 503)
+    except VoiceUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     session = resources.call_manager.start(
         domain=body.domain, campaign=body.campaign, consent=body.consent
     )

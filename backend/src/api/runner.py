@@ -15,6 +15,7 @@ event fan-out, and concurrency without loading a single model.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
@@ -50,8 +51,20 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _disclosure_hash(disclosure: str) -> str:
+    """Stable hash of the exact disclosure spoken — proves which AI notice was given."""
+    return hashlib.sha256(disclosure.strip().encode("utf-8")).hexdigest()
+
+
+class VoiceUnavailable(RuntimeError):
+    """The voice models needed to run a call are not installed in this image."""
+
+
 class CallEngine(ABC):
     """Everything call-specific the runner needs, behind one seam (real or fake)."""
+
+    def preflight(self) -> None:  # noqa: B027 — optional override hook, default no-op
+        """Raise :class:`VoiceUnavailable` if a call cannot run here. Default: no-op."""
 
     @abstractmethod
     def default_domain(self) -> str: ...
@@ -119,6 +132,10 @@ class CallManager:
     def list(self) -> list[CallSession]:
         return sorted(self._sessions.values(), key=lambda s: s.started_at, reverse=True)
 
+    def preflight(self) -> None:
+        """Verify a call can run here (voice models installed); raises VoiceUnavailable."""
+        self._engine.preflight()
+
     # --- lifecycle ---------------------------------------------------------
     def start(self, *, domain: str | None = None, campaign: str | None = None,
               consent: bool = True) -> CallSession:
@@ -155,7 +172,11 @@ class CallManager:
             return
 
         state = ConversationState(call_id=call_id)
-        pipeline = self._engine.build_pipeline(session.domain, domain_cfg, state, self._state_store)
+        # Build off the event loop: a real engine loads heavy models here (FastEmbed
+        # retriever, Whisper, Kokoro), which must never block the API while a call starts.
+        pipeline = await asyncio.to_thread(
+            self._engine.build_pipeline, session.domain, domain_cfg, state, self._state_store
+        )
 
         try:
             with span("call.run", call_id=call_id, domain=session.domain):
@@ -189,7 +210,7 @@ class CallManager:
         self._emit_transcript(call_id, "caller", outcome.transcript)
         self._emit_transcript(call_id, "assistant", outcome.reply)
         session.consent_granted = outcome.decision is ConsentDecision.ACCEPTED
-        await self._log_consent(session, outcome.decision)
+        await self._log_consent(session, outcome.decision, _disclosure_hash(disclosure))
         self._hub.publish(call_id, "consent", {
             "decision": outcome.decision.value, "granted": session.consent_granted,
         })
@@ -234,13 +255,16 @@ class CallManager:
             data["citations"] = citations
         self._hub.publish(call_id, "transcript", data)
 
-    async def _log_consent(self, session: CallSession, decision: ConsentDecision) -> None:
+    async def _log_consent(
+        self, session: CallSession, decision: ConsentDecision, disclosure_hash: str
+    ) -> None:
         from src.storage.queries import log_consent
 
         async with self._sessionmaker() as db:
             await log_consent(
                 db, call_id=session.call_id, domain=session.domain,
                 decision=decision.value, granted=session.consent_granted,
+                disclosure_hash=disclosure_hash,
             )
 
     async def _finalize(self, session: CallSession, state: ConversationState) -> FinalizedCall:

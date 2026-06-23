@@ -29,7 +29,7 @@ from src.api.app import create_app
 from src.api.context import AppResources
 from src.api.events import CallEventHub
 from src.api.ingest_service import IngestService
-from src.api.runner import AudioInput, CallEngine, CallManager
+from src.api.runner import AudioInput, CallEngine, CallManager, VoiceUnavailable
 from src.providers.llm.base import LLMProvider
 from src.providers.stt.base import STTProvider
 from src.providers.tts.base import TTSProvider
@@ -157,11 +157,23 @@ _DEFAULT_SUMMARY = "Strong candidate with six years of Python experience; availa
 class FakeCallEngine(CallEngine):
     """Runs the real pipeline/dialogue with fakes; persists canned notes/summary."""
 
-    def __init__(self, settings: Settings, *, stt: STTProvider, tts: TTSProvider) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        stt: STTProvider,
+        tts: TTSProvider,
+        preflight_error: str | None = None,
+    ) -> None:
         self._settings = settings
         self._stt = stt
         self._tts = tts
         self._llm = FakeLLM()
+        self._preflight_error = preflight_error
+
+    def preflight(self) -> None:
+        if self._preflight_error:
+            raise VoiceUnavailable(self._preflight_error)
 
     def default_domain(self) -> str:
         return self._settings.domain
@@ -199,8 +211,10 @@ class FakeCallEngine(CallEngine):
 
 
 def make_settings() -> Settings:
-    """Deterministic settings: screening domain, tracing off (no global side effects)."""
-    return get_settings().model_copy(update={"otel_enabled": False, "domain": "screening"})
+    """Deterministic settings: screening domain, tracing off, memory state (no Redis)."""
+    return get_settings().model_copy(
+        update={"otel_enabled": False, "domain": "screening", "state_backend": "memory"}
+    )
 
 
 def make_resources(
@@ -211,12 +225,15 @@ def make_resources(
     tts: TTSProvider | None = None,
     data_dir: Path | None = None,
     indexer=None,
+    preflight_error: str | None = None,
 ) -> AppResources:
     settings = settings or make_settings()
     sessionmaker = make_sessionmaker(engine)
     hub = CallEventHub()
     call_manager = CallManager(
-        engine=FakeCallEngine(settings, stt=stt or FakeSTT(), tts=tts or FakeTTS()),
+        engine=FakeCallEngine(
+            settings, stt=stt or FakeSTT(), tts=tts or FakeTTS(), preflight_error=preflight_error
+        ),
         sessionmaker=sessionmaker,
         state_store=InMemoryStateStore(),
         hub=hub,

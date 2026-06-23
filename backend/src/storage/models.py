@@ -98,6 +98,8 @@ class ConsentLog(Base):
     domain: Mapped[str] = mapped_column(String(64))
     decision: Mapped[str] = mapped_column(String(16))  # accepted | refused | ambiguous
     granted: Mapped[bool] = mapped_column(Boolean)
+    # sha256 of the exact disclosure spoken — proves which AI notice the caller heard.
+    disclosure_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     __table_args__ = (Index("ix_consent_log_call_id", "call_id"),)
