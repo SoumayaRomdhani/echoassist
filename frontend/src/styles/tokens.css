@@ -1,0 +1,39 @@
+/* ACTEEK design tokens — EchoAssist frontend
+   Dark-mode first. Light = :root, Dark = [data-theme="dark"] (toggle).
+   Load fonts in index.html:
+   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Manrope:wght@400;500;700&display=swap" rel="stylesheet">
+*/
+
+:root {
+  /* App tokens — light */
+  --c-bg: #EEF4FF;
+  --c-surface: #FFFFFF;
+  --c-text: #080F20;
+  --c-text-muted: #364E78;
+  --c-accent: #1A6FE8;
+  --c-accent-2: #1A6FE8;
+  --c-accent-3: #E8378A;
+  --c-border: rgba(59, 100, 200, 0.13);   /* #3B64C8 @ 13% */
+
+  /* Brand board accents (identity) */
+  --brand-cyan: #00F0FF;
+  --brand-violet: #7000FF;
+  --brand-depth: #1A237E;
+  --brand-base: #0A0C10;
+
+  /* Typography */
+  --font-heading: "Space Grotesk", system-ui, sans-serif;
+  --font-body: "Manrope", system-ui, sans-serif;
+}
+
+[data-theme="dark"] {
+  /* App tokens — dark (primary) */
+  --c-bg: #060810;
+  --c-surface: #0C0F1A;
+  --c-text: #E8EEFF;
+  --c-text-muted: #C4D8FF;
+  --c-accent: #4AF4FF;
+  --c-accent-2: #7C6BFF;
+  --c-accent-3: #FF6B9D;
+  --c-border: rgba(99, 179, 237, 0.12);   /* #63B3ED @ 12% */
+}
