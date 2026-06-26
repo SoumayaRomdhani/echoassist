@@ -43,7 +43,7 @@ export function StartCallDialog({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button>
+        <Button variant="brand">
           <PhoneCall className="size-4" />
           Start screening call
         </Button>

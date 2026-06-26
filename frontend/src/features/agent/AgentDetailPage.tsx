@@ -1,4 +1,5 @@
-import { AlertTriangle, Bot } from 'lucide-react'
+import { AlertTriangle } from 'lucide-react'
+import { BrandMark } from '@/components/BrandMark'
 import { EmptyState } from '@/components/EmptyState'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -16,12 +17,16 @@ export function AgentDetailPage({ onOpenCall }: { onOpenCall: (callId: string) =
   return (
     <div className="mx-auto max-w-7xl px-6 py-8 md:px-10">
       <div className="flex items-start gap-4">
-        <div className="flex size-14 items-center justify-center rounded-2xl bg-accent/10 text-accent ring-1 ring-accent/15">
-          <Bot className="size-7" />
+        <div className="flex size-14 items-center justify-center rounded-2xl bg-gradient-to-br from-accent/20 to-accent-2/20 ring-1 ring-accent/20">
+          <BrandMark className="size-8" />
         </div>
         <div>
           <div className="flex items-center gap-3">
-            <h1 className="font-display text-3xl font-bold">EchoAssist</h1>
+            <h1 className="font-display text-3xl font-bold">
+              <span className="bg-gradient-to-r from-accent to-accent-2 bg-clip-text text-transparent">
+                EchoAssist
+              </span>
+            </h1>
             <Badge variant="ready">Ready</Badge>
           </div>
           <p className="mt-1 max-w-2xl text-sm leading-relaxed text-muted">

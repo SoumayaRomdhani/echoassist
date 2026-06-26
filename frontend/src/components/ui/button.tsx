@@ -10,6 +10,9 @@ const buttonVariants = cva(
       variant: {
         // Brand CTA: solid ACTEEK blue with white text — consistent in both themes.
         default: 'bg-[#1A6FE8] text-white shadow-sm hover:brightness-110',
+        // Gradient brand CTA (blue→violet) for hero actions (login, start call).
+        brand:
+          'bg-gradient-to-r from-[#1A6FE8] to-[#7C6BFF] text-white shadow-lg shadow-[#1A6FE8]/25 hover:brightness-110',
         accent: 'bg-accent text-brand-base hover:brightness-110',
         outline: 'border bg-transparent hover:bg-foreground/[0.06]',
         ghost: 'hover:bg-foreground/[0.06]',
