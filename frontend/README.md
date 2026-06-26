@@ -33,11 +33,12 @@ It renders **only** the agent workspace (calls, live transcript, notes, summary,
 consent, metrics, domain config). It inherits the theme from the host's
 `[data-theme]` via the shared `--c-*` tokens.
 
-Running this project standalone (`npm run dev`) boots **straight into the agent** via a
-thin dev harness (`src/App.tsx`) that mounts `<EchoAssistAgent>` and adds a theme toggle,
-so you can present and validate it on its own. The marketplace, sidebar, login, and SSO
-are **ACTEEK's** — intentionally *not* built here (ARCHITECTURE.md §2 — *don't rebuild
-ACTEEK auth*); ACTEEK supplies the shell and passes the SSO token via `config.getAuthToken`.
+Running this project standalone (`npm run dev`) gives a small **demo host** around the
+agent: a login (dev SSO stub) + a slim branded top bar (theme toggle, backend-health
+pill, account menu). That host is **not** the deliverable — it only exists so you can run
+and present the agent on its own. The signed-in session's token is handed to the agent via
+`config.getAuthToken`, exactly where **ACTEEK's SSO token** goes when they embed it. ACTEEK
+provides their own marketplace + shell + SSO (ARCHITECTURE.md §2 — *don't rebuild ACTEEK auth*).
 
 ## Prerequisites
 
@@ -52,9 +53,9 @@ cp .env.example .env        # optional; defaults are fine for the mock demo
 npm run dev                 # http://localhost:5173
 ```
 
-By default `npm run dev` opens the agent against an **in-browser mock backend** (MSW)
-that mirrors the real DTOs and a scripted live call — so it's usable with no backend,
-Docker, or API keys. Click **Start screening call** to watch a live transcript stream in.
+`npm run dev` runs against an **in-browser mock backend** (MSW) — no backend, Docker, or
+API keys needed. Log in with any email/password or an SSO button (dev stub), then click
+**Start screening call** to watch a live transcript stream in.
 
 ## Run against the real backend
 
@@ -93,11 +94,16 @@ src/
   features/   agent · calls (list/detail/transcript/notes/summary/consent) · metrics · config
   lib/        env, runtimeConfig (host API + auth), types (mirror backend DTOs), api,
               query (TanStack), ws (live-event reducer + transport), format
-  hooks/      useCallEvents (live stream), useTheme (dev harness)
-  components/ StatusBadge, ConsentBadge, EmptyState, ThemeToggle, ui/* (shadcn-style)
+  hooks/      useCallEvents (live stream), useTheme
+  components/ BrandMark, StatusBadge, ConsentBadge, EmptyState, ThemeToggle, ui/* (shadcn-style)
   mocks/      MSW handlers + db + scripted live-call transport (dev / offline)
   test/       Vitest setup + tests
-  App.tsx     thin dev harness: mounts <EchoAssistAgent> + theme toggle (NOT shipped to ACTEEK)
+
+  # demo host only (NOT shipped to ACTEEK):
+  auth/       AuthProvider + dev SSO stub (session token → agent via getAuthToken)
+  features/auth/  LoginPage
+  components/ AppFrame (slim top bar), ReadinessIndicator
+  App.tsx     login gate → AppFrame wrapping <EchoAssistAgent>
 ```
 
 ## Notes
