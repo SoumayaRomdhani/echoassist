@@ -1,0 +1,67 @@
+@import 'tailwindcss';
+@import './tokens.css';
+
+/* Dark theme is driven by the [data-theme="dark"] attribute (matches tokens.css),
+   not Tailwind's default class strategy. */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+/* Map the ACTEEK --c-* / brand tokens onto Tailwind's theme so utilities like
+   bg-surface / text-foreground / border-border / font-display resolve to the
+   live CSS variables and therefore re-theme automatically on toggle. */
+@theme {
+  --color-background: var(--c-bg);
+  --color-surface: var(--c-surface);
+  --color-foreground: var(--c-text);
+  --color-muted: var(--c-text-muted);
+  --color-accent: var(--c-accent);
+  --color-accent-2: var(--c-accent-2);
+  --color-accent-3: var(--c-accent-3);
+  --color-border: var(--c-border);
+
+  --color-brand-cyan: var(--brand-cyan);
+  --color-brand-violet: var(--brand-violet);
+  --color-brand-depth: var(--brand-depth);
+  --color-brand-base: var(--brand-base);
+
+  --font-sans: var(--font-body);
+  --font-display: var(--font-heading);
+}
+
+@layer base {
+  /* Default every border to the themed token so `border` alone is on-brand. */
+  *,
+  ::after,
+  ::before {
+    border-color: var(--c-border);
+  }
+
+  html {
+    color-scheme: light dark;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background-color: var(--c-bg);
+    color: var(--c-text);
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  .ui-heading {
+    font-family: var(--font-heading);
+  }
+}
+
+/* Thin, on-brand scrollbars for dark surfaces. */
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--c-border) transparent;
+  }
+}
