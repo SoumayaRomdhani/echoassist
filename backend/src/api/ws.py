@@ -21,10 +21,22 @@ router = APIRouter(tags=["ws"])
 @router.websocket("/ws/calls/{call_id}")
 async def call_events(websocket: WebSocket, call_id: str) -> None:
     resources = websocket.app.state.resources
+    settings = resources.settings
     hub = resources.hub
     known = resources.call_manager.get(call_id) is not None or bool(hub.history(call_id))
 
     await websocket.accept()
+
+    # Shared-secret gate (Sprint 8), stand-in for ACTEEK SSO: when API_AUTH_TOKEN is
+    # set, the client must present a matching ?access_token=. Unset => open (dev).
+    token = websocket.query_params.get("access_token")
+    if settings.api_auth_token and token != settings.api_auth_token:
+        await websocket.send_json(
+            {"type": "error", "data": {"message": "unauthorized: invalid or missing access_token"}}
+        )
+        await websocket.close(code=4401)
+        return
+
     if not known:
         await websocket.send_json({"type": "error", "data": {"message": f"unknown call {call_id}"}})
         await websocket.close(code=4404)
