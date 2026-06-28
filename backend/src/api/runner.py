@@ -15,7 +15,6 @@ event fan-out, and concurrency without loading a single model.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
@@ -26,7 +25,7 @@ from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from src.agent.consent import ConsentDecision
+from src.agent.consent import ConsentDecision, disclosure_hash
 from src.agent.domain import DomainConfig
 from src.agent.finalize import FinalizedCall
 from src.agent.orchestrator import VoicePipeline
@@ -49,11 +48,6 @@ current_call_id: ContextVar[str | None] = ContextVar("current_call_id", default=
 
 def _now() -> datetime:
     return datetime.now(UTC)
-
-
-def _disclosure_hash(disclosure: str) -> str:
-    """Stable hash of the exact disclosure spoken — proves which AI notice was given."""
-    return hashlib.sha256(disclosure.strip().encode("utf-8")).hexdigest()
 
 
 class VoiceUnavailable(RuntimeError):
@@ -210,7 +204,7 @@ class CallManager:
         self._emit_transcript(call_id, "caller", outcome.transcript)
         self._emit_transcript(call_id, "assistant", outcome.reply)
         session.consent_granted = outcome.decision is ConsentDecision.ACCEPTED
-        await self._log_consent(session, outcome.decision, _disclosure_hash(disclosure))
+        await self._log_consent(session, outcome.decision, disclosure_hash(disclosure))
         self._hub.publish(call_id, "consent", {
             "decision": outcome.decision.value, "granted": session.consent_granted,
         })

@@ -156,6 +156,9 @@ class Settings(BaseSettings):
     api_port: int = 8000
     # Comma-separated allowed CORS origins for the dashboard ("*" = any, dev only).
     api_cors_origins: str = "*"
+    # Shared-secret WS auth (Sprint 8), stand-in for ACTEEK SSO: when set, WebSocket
+    # clients must present ?access_token=<this>. Unset => open (dev only).
+    api_auth_token: str | None = None
 
     # --- Provider failover (Sprint 6, ARCHITECTURE.md §10 — never silent) ---
     # Secondary LLM tried when the primary fails (quota/transport). None = no failover.

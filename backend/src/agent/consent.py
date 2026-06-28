@@ -8,6 +8,7 @@ touching callers.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from enum import StrEnum
 
@@ -91,3 +92,14 @@ def classify_consent(text: str) -> ConsentDecision:
     if refuse and not accept:
         return ConsentDecision.REFUSED
     return ConsentDecision.AMBIGUOUS
+
+
+def disclosure_hash(disclosure: str) -> str:
+    """Stable sha256 of the exact disclosure spoken — proves which AI notice was given.
+
+    Persisted on the consent audit record so the compliance trail captures *which*
+    AI disclosure the caller heard (ARCHITECTURE.md §10), independent of any later
+    wording change. Shared by every call entry point (API runner + live transport)
+    so the recorded hash is identical however the call was placed.
+    """
+    return hashlib.sha256(disclosure.strip().encode("utf-8")).hexdigest()

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.agent.consent import ConsentDecision, classify_consent
+from src.agent.consent import ConsentDecision, classify_consent, disclosure_hash
 
 
 @pytest.mark.parametrize(
@@ -55,3 +55,10 @@ def test_refused(text: str) -> None:
 )
 def test_ambiguous(text: str) -> None:
     assert classify_consent(text) is ConsentDecision.AMBIGUOUS
+
+
+def test_disclosure_hash_is_stable_and_whitespace_insensitive() -> None:
+    base = disclosure_hash("This call may be recorded.")
+    assert base == disclosure_hash("  This call may be recorded.  ")  # trims surrounding space
+    assert base != disclosure_hash("A different notice.")
+    assert len(base) == 64 and all(c in "0123456789abcdef" for c in base)  # sha256 hex
