@@ -92,3 +92,74 @@ live call hiccups (LLM quota, mic, network), play the recording instead. Keep
 Each run uses a fresh `call_id`; consent + call rows **accumulate** (that *is* the
 audit trail). To present a clean DB, optionally truncate the demo tables before the
 session.
+
+---
+
+## 10. Path B — the same demo on a real phone number (LiveKit + SIP)
+
+The mic demo above proves the engine. **Path B carries the *same* session over a
+LiveKit room instead of the local mic** — `scripts/run_livekit.py` swaps
+`LocalAudioTransport` → `LiveKitTransport` and **nothing else changes** (same
+disclosure→consent→interview→notes/summary, same `src.telephony.live_session`).
+Roll it out in two steps; the agent script is identical for both.
+
+> Needs accounts: **LiveKit** (Cloud or self-host) for step 10.1, **plus Twilio**
+> for step 10.2. Put keys in `backend/.env` (never committed). For an interactive
+> call also set the cloud providers — `STT_PROVIDER=deepgram`, `TTS_PROVIDER=cartesia`
+> (+ their keys) — so turns are sub-second instead of the ~15–30 s CPU story.
+
+### 10.1 SAFE FIRST — WebRTC loopback (a browser is the caller, no phone number)
+
+1. **Get LiveKit credentials.** Cloud: create a project at
+   <https://cloud.livekit.io> → copy the **Project URL** (`wss://<you>.livekit.cloud`)
+   + an **API key/secret**. Self-host (no account, needs Docker):
+   `docker run --rm -p 7880:7880 -e LIVEKIT_KEYS="devkey: secret" livekit/livekit-server --dev`
+   → `LIVEKIT_URL=ws://localhost:7880`, key `devkey`, secret `secret`.
+2. **`.env`:**
+   ```
+   LIVEKIT_URL=wss://<you>.livekit.cloud
+   LIVEKIT_API_KEY=...
+   LIVEKIT_API_SECRET=...
+   LIVEKIT_ROOM=echoassist
+   ```
+3. **Install the extra (once):** `pip install -e ".[telephony-livekit]"`.
+4. **Run the agent** (it connects, publishes its voice, and waits for a caller):
+   ```powershell
+   python scripts\run_livekit.py --interview --lang en
+   ```
+5. **Join as the caller:** the script prints a **meet.livekit.io URL** — open it in a
+   browser, allow the mic, and you are on the call. WebRTC does echo cancellation, so
+   **barge-in works without headphones**. The script flow is identical to §4.
+
+### 10.2 PSTN — route a Twilio number into the room (no code change)
+
+A phone caller is just another room participant, so `run_livekit.py` is **unchanged**;
+you wire the carrier once. Using the LiveKit CLI (`lk`, authenticated to your project):
+
+1. **LiveKit SIP inbound trunk** — accept calls for your number:
+   ```bash
+   lk sip inbound create --name echoassist-in --numbers "+1XXXXXXXXXX"
+   ```
+2. **LiveKit dispatch rule** — send every inbound SIP call to the fixed room the agent
+   waits in (so the agent and the caller meet):
+   ```bash
+   lk sip dispatch create --name echoassist-dispatch \
+     --trunks <trunk_id> --room echoassist --type direct
+   ```
+3. **Twilio** — buy a number, create an **Elastic SIP Trunk**, and point its
+   **Origination URI** at your LiveKit SIP host (Cloud: `sip:<project>.sip.livekit.cloud`;
+   self-host: your server's SIP URI), then route the number to that trunk. (Twilio
+   `<Dial><Sip>` TwiML to the same URI also works.)
+4. **Run the agent** (`python scripts\run_livekit.py --interview`) so it is in
+   `echoassist`, then **dial the Twilio number** — the disclosure plays, consent is
+   captured, and the screening runs over the phone. The compliance trail (§6) and
+   notes/summary persist exactly as in the local demo.
+
+### 10.3 Fallback
+
+The §8 backup-recording advice applies to the live phone demo too — pre-record one
+successful PSTN call; if the carrier/network hiccups on the day, play the recording.
+
+> **Status:** Path B code is written and unit-tested (provider/transport seams, token
+> grant, endpointing) but **not yet validated against live LiveKit/Twilio accounts** —
+> the steps above are the validation procedure to run once keys exist.

@@ -105,6 +105,11 @@ class Settings(BaseSettings):
     whisper_beam_size: int = 5
     whisper_cpu_threads: int = 0          # 0 = library default (uses all physical cores)
 
+    # --- STT: Deepgram (paid drop-in, Sprint 8 Path B) ---
+    deepgram_api_key: str | None = None
+    deepgram_model: str = "nova-2"        # nova-2 (broad multilingual) | nova-3 | ...
+    deepgram_language: str | None = None  # None => Deepgram default; e.g. "fr", "en", "multi"
+
     # --- LLM: Gemini (default) ---
     gemini_api_key: str | None = None
     gemini_model: str = "gemini-2.5-flash"
@@ -117,6 +122,19 @@ class Settings(BaseSettings):
     kokoro_lang_code: str = "a"
     kokoro_voice: str = "af_heart"
     kokoro_speed: float = 1.0
+
+    # --- TTS: Cartesia (paid drop-in, Sprint 8 Path B) ---
+    cartesia_api_key: str | None = None
+    cartesia_model: str = "sonic-2"
+    cartesia_voice_id: str | None = None       # pick a voice id at https://play.cartesia.ai
+    cartesia_sample_rate: int = 24000          # 8000|16000|22050|24000|44100|48000
+    cartesia_language: str | None = None       # None => model default; e.g. "fr", "en"
+
+    # --- TTS: ElevenLabs (paid drop-in, Sprint 8 Path B) ---
+    elevenlabs_api_key: str | None = None
+    elevenlabs_voice_id: str | None = None     # pick a voice id at https://elevenlabs.io
+    elevenlabs_model: str = "eleven_turbo_v2_5"
+    elevenlabs_sample_rate: int = 24000        # 8000|16000|22050|24000|44100|48000
 
     # --- RAG: embeddings / reranker / vector store (Sprint 2) ---
     embeddings_provider: EmbeddingsProviderName = EmbeddingsProviderName.fastembed
@@ -173,6 +191,15 @@ class Settings(BaseSettings):
     otel_exporter_otlp_endpoint: str | None = None   # e.g. http://localhost:4318/v1/traces
     otel_console_export: bool = False                 # print spans to stdout (noisy; debug only)
 
+    # --- Telephony: LiveKit + SIP (Sprint 8 Path B) ---
+    # The same Transport over WebRTC/PSTN instead of the local mic. Used by
+    # scripts/run_livekit.py; the rest of the pipeline is unchanged.
+    livekit_url: str | None = None                    # wss://<you>.livekit.cloud | ws://localhost:7880
+    livekit_api_key: str | None = None
+    livekit_api_secret: str | None = None
+    livekit_room: str = "echoassist"
+    livekit_identity: str = "agent"
+
     # --- Generation / misc ---
     llm_temperature: float = 0.3
     llm_max_tokens: int = 512
@@ -212,6 +239,14 @@ def build_stt(settings: Settings | None = None) -> STTProvider:
             language=settings.whisper_language,
             beam_size=settings.whisper_beam_size,
             cpu_threads=settings.whisper_cpu_threads,
+        )
+    if settings.stt_provider is STTProviderName.deepgram:
+        from src.providers.stt.deepgram import DeepgramSTT
+
+        return DeepgramSTT(
+            api_key=settings.deepgram_api_key,
+            model=settings.deepgram_model,
+            language=settings.deepgram_language,
         )
     raise NotImplementedError(f"STT provider not yet implemented: {settings.stt_provider.value}")
 
@@ -270,6 +305,25 @@ def build_tts(settings: Settings | None = None) -> TTSProvider:
             lang_code=settings.kokoro_lang_code,
             voice=settings.kokoro_voice,
             speed=settings.kokoro_speed,
+        )
+    if settings.tts_provider is TTSProviderName.cartesia:
+        from src.providers.tts.cartesia import CartesiaTTS
+
+        return CartesiaTTS(
+            api_key=settings.cartesia_api_key,
+            model=settings.cartesia_model,
+            voice_id=settings.cartesia_voice_id,
+            sample_rate=settings.cartesia_sample_rate,
+            language=settings.cartesia_language,
+        )
+    if settings.tts_provider is TTSProviderName.elevenlabs:
+        from src.providers.tts.elevenlabs import ElevenLabsTTS
+
+        return ElevenLabsTTS(
+            api_key=settings.elevenlabs_api_key,
+            voice_id=settings.elevenlabs_voice_id,
+            model=settings.elevenlabs_model,
+            sample_rate=settings.elevenlabs_sample_rate,
         )
     raise NotImplementedError(f"TTS provider not yet implemented: {settings.tts_provider.value}")
 
