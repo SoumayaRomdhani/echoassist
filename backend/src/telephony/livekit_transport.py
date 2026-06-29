@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from collections import deque
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
@@ -93,6 +94,7 @@ class LiveKitTransport(Transport):
         join_timeout: float = 120.0,
         barge_in_threshold: float = 0.02,
         barge_in_onset_frames: int = 5,
+        audio_debug: bool = False,
     ) -> None:
         missing = [
             name
@@ -115,6 +117,7 @@ class LiveKitTransport(Transport):
         self._identity = identity
         self._cfg = endpoint or EndpointConfig()
         self._join_timeout = join_timeout
+        self._audio_debug = audio_debug
         # Barge-in uses a higher bar than endpointing (a louder, slightly longer run of
         # speech) so a stray noise on the line does not cut the agent off mid-sentence.
         self._barge_cfg = EndpointConfig(
@@ -131,6 +134,9 @@ class LiveKitTransport(Transport):
         self._reader: asyncio.Task[None] | None = None
         self._caller_ready: asyncio.Event | None = None
         self._caller: rtc.RemoteParticipant | None = None
+        self._frames_seen = 0
+        self._last_frame_at: float | None = None
+        self._last_rms = 0.0
 
     # --- token ------------------------------------------------------------- #
     def _build_token(self) -> str:
@@ -191,7 +197,26 @@ class LiveKitTransport(Transport):
         try:
             async for event in self._audio_stream:
                 # LiveKit frames are 16-bit PCM; decode to float32 for the endpointer.
-                self._queue.put_nowait(pcm16_to_float(bytes(event.frame.data)))
+                samples = pcm16_to_float(bytes(event.frame.data))
+                self._frames_seen += 1
+                self._last_frame_at = time.monotonic()
+                self._last_rms = (
+                    float(np.sqrt(np.mean(np.square(samples)))) if len(samples) else 0.0
+                )
+                if self._frames_seen == 1:
+                    log.info(
+                        "first inbound LiveKit audio frame received: samples=%d rms=%.4f",
+                        len(samples),
+                        self._last_rms,
+                    )
+                elif self._audio_debug and self._frames_seen % 250 == 0:
+                    log.info(
+                        "inbound LiveKit audio: frames=%d latest_rms=%.4f queue=%d",
+                        self._frames_seen,
+                        self._last_rms,
+                        self._queue.qsize(),
+                    )
+                self._queue.put_nowait(samples)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 — the stream ends when the caller leaves; not fatal
@@ -206,14 +231,38 @@ class LiveKitTransport(Transport):
         # Hold pre-onset frames so the start of speech is not clipped; flush them once
         # the caller is committed to speaking.
         preroll: deque[np.ndarray] = deque(maxlen=self._cfg.onset_frames)
+        waiting_ms = 0
         while True:
-            frame = await self._queue.get()
+            try:
+                frame = await asyncio.wait_for(self._queue.get(), timeout=5.0)
+            except TimeoutError:
+                if self._frames_seen == 0:
+                    log.warning(
+                        "still waiting for caller audio frames from LiveKit. "
+                        "Check the browser mic permission/mute state and close old meet tabs."
+                    )
+                else:
+                    log.warning(
+                        "no new LiveKit audio frame for 5s (frames_seen=%d last_rms=%.4f).",
+                        self._frames_seen,
+                        self._last_rms,
+                    )
+                continue
             ended = self._endpointer.update(frame)
             if self._endpointer.started:
                 while preroll:
                     yield chunk_from_float(preroll.popleft(), _CAPTURE_SR)
                 yield chunk_from_float(frame, _CAPTURE_SR)
             else:
+                waiting_ms += self._cfg.frame_ms
+                if waiting_ms >= 5000:
+                    log.info(
+                        "waiting for speech onset: latest_rms=%.4f threshold=%.4f "
+                        "(speak louder or lower --vad-threshold).",
+                        self._last_rms,
+                        self._cfg.energy_threshold,
+                    )
+                    waiting_ms = 0
                 preroll.append(frame)
             if ended:
                 return

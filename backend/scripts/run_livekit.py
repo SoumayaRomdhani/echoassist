@@ -42,6 +42,7 @@ from src.providers.errors import ProviderConfigError, ProviderError
 from src.runtime import use_selector_event_loop
 from src.telephony.live_session import run_live_session
 from src.telephony.livekit_transport import LiveKitTransport, guest_meet_url
+from src.telephony.vad import EndpointConfig
 
 log = logging.getLogger("echoassist.live")
 
@@ -61,6 +62,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--room", default=None,
         help="Override LIVEKIT_ROOM for this run.",
+    )
+    parser.add_argument(
+        "--vad-threshold",
+        type=float,
+        default=0.015,
+        help="Speech energy threshold for LiveKit inbound audio (lower if mic is quiet).",
+    )
+    parser.add_argument(
+        "--audio-debug",
+        action="store_true",
+        help="Log inbound LiveKit audio frame/RMS diagnostics.",
     )
     return parser.parse_args()
 
@@ -101,6 +113,8 @@ async def main() -> None:
             api_secret=settings.livekit_api_secret,
             room=settings.livekit_room,
             identity=settings.livekit_identity,
+            endpoint=EndpointConfig(energy_threshold=args.vad_threshold),
+            audio_debug=args.audio_debug,
         )
     except ProviderConfigError as exc:
         raise SystemExit(f"{FAIL} {exc}") from exc
