@@ -20,13 +20,19 @@ dependencies = [
 # you actually use. Switching provider = changing an env var + installing its extra.
 [project.optional-dependencies]
 stt-whisper = ["faster-whisper>=1.0"]
+stt-deepgram = ["deepgram-sdk>=7.0"]            # paid STT drop-in (Sprint 8 Path B)
 llm-gemini  = ["google-genai>=1.0"]
 llm-ollama  = ["ollama>=0.3"]
 tts-kokoro  = ["kokoro>=0.9"]
+tts-cartesia = ["cartesia>=3.0"]               # paid TTS drop-in (Sprint 8 Path B)
+tts-elevenlabs = ["elevenlabs>=2.0"]           # paid TTS drop-in (Sprint 8 Path B)
 # RAG core (Sprint 2): hybrid embeddings + reranker (FastEmbed) + vector DB (Qdrant).
 # fastembed is PINNED: model pooling/results can change between minor versions
 # (e.g. CLS vs mean pooling), so reproducibility requires an exact version.
 rag = ["qdrant-client>=1.12", "fastembed==0.8.0"]
+# Telephony (Sprint 8 Path B): LiveKit room transport (WebRTC loopback) + SIP/PSTN.
+# livekit = realtime SDK (rtc.Room/AudioStream/AudioSource); livekit-api = join tokens.
+telephony-livekit = ["livekit>=1.0", "livekit-api>=1.0"]
 # Conversation state (Sprint 3): Redis.
 state = ["redis>=5.0"]
 # Persistence (Sprint 4): Postgres via SQLAlchemy async + psycopg.
@@ -59,9 +65,14 @@ sprint1 = [
 ]
 all = [
     "faster-whisper>=1.0",
+    "deepgram-sdk>=7.0",
     "google-genai>=1.0",
     "ollama>=0.3",
     "kokoro>=0.9",
+    "cartesia>=3.0",
+    "elevenlabs>=2.0",
+    "livekit>=1.0",
+    "livekit-api>=1.0",
     "qdrant-client>=1.12",
     "fastembed==0.8.0",
     "redis>=5.0",
