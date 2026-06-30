@@ -69,6 +69,7 @@ def check_dependencies() -> None:
         ("faster_whisper", s.stt_provider is STTProviderName.whisper_local),
         ("google.genai", s.llm_provider is LLMProviderName.gemini),
         ("ollama", s.llm_provider is LLMProviderName.ollama),
+        ("groq", s.llm_provider is LLMProviderName.groq),
         ("kokoro", s.tts_provider is TTSProviderName.kokoro),
     ]
     for module, active in checks:
@@ -80,6 +81,8 @@ def check_dependencies() -> None:
 
     if s.llm_provider is LLMProviderName.gemini and not s.gemini_api_key:
         report(FAIL, "GEMINI_API_KEY", "not set — add it to backend/.env")
+    if s.llm_provider is LLMProviderName.groq and not s.groq_api_key:
+        report(FAIL, "GROQ_API_KEY", "not set — add it to backend/.env")
 
 
 def check_rag() -> None:

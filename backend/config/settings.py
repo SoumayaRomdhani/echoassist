@@ -55,6 +55,7 @@ class LLMProviderName(StrEnum):
     gemini = "gemini"
     ollama = "ollama"
     claude = "claude"
+    groq = "groq"
 
 
 class TTSProviderName(StrEnum):
@@ -117,6 +118,15 @@ class Settings(BaseSettings):
     # --- LLM: Ollama ---
     ollama_host: str = "http://localhost:11434"
     ollama_model: str = "qwen3"
+
+    # --- LLM: Groq (free, fast cloud drop-in, Sprint 8 Path B) ---
+    # Generous free tier (won't exhaust mid-interview like Gemini's). Default is
+    # 70b: it does function calling reliably, which the app needs (RAG SEARCH_TOOL
+    # in grounding.py, notes extraction in notes.py). The faster llama-3.1-8b-instant
+    # often emits malformed tool calls (Groq 400 tool_use_failed) — fine only if you
+    # don't use the tool paths.
+    groq_api_key: str | None = None
+    groq_model: str = "llama-3.3-70b-versatile"
 
     # --- TTS: Kokoro ---
     kokoro_lang_code: str = "a"
@@ -272,6 +282,15 @@ def build_llm(
         return OllamaLLM(
             host=settings.ollama_host,
             model=settings.ollama_model,
+            temperature=settings.llm_temperature,
+            max_tokens=settings.llm_max_tokens,
+        )
+    if provider is LLMProviderName.groq:
+        from src.providers.llm.groq import GroqLLM
+
+        return GroqLLM(
+            api_key=settings.groq_api_key,
+            model=settings.groq_model,
             temperature=settings.llm_temperature,
             max_tokens=settings.llm_max_tokens,
         )
