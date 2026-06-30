@@ -108,6 +108,11 @@ Roll it out in two steps; the agent script is identical for both.
 > call also set the cloud providers — `STT_PROVIDER=deepgram`, `TTS_PROVIDER=cartesia`
 > (+ their keys) — so turns are sub-second instead of the ~15–30 s CPU story.
 
+> **First, verify your provider keys without a mic or a call:**
+> `python scripts\smoke_providers.py` round-trips a line of text (TTS → wav → STT)
+> and prints per-stage latency. If "heard ≈ said", both providers work; a bad key
+> exits with a clear message. Run it before the live demo to de-risk the keys.
+
 ### 10.1 SAFE FIRST — WebRTC loopback (a browser is the caller, no phone number)
 
 1. **Get LiveKit credentials.** Cloud: create a project at
