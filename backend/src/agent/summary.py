@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 
 from src.agent.state import ConversationState
+from src.providers.errors import ProviderError
 from src.providers.llm.base import LLMProvider
 from src.providers.types import Message, Role
 
@@ -49,10 +50,18 @@ class SummaryGenerator:
             return _FALLBACK
         transcript = "\n".join(f"{t['role']}: {t['text']}" for t in state.transcript)
 
-        summary = await self._generate(transcript)
+        try:
+            summary = await self._generate(transcript)
+        except ProviderError as exc:
+            log.warning("summary generation failed (%s); using fallback summary", exc)
+            return _INCOMPLETE
         if _looks_incomplete(summary):
             log.info("summary looked incomplete (%r); retrying once", summary[:40])
-            summary = await self._generate(transcript)
+            try:
+                summary = await self._generate(transcript)
+            except ProviderError as exc:
+                log.warning("summary retry failed (%s); using fallback summary", exc)
+                return _INCOMPLETE
 
         # Never persist an empty or truncated summary.
         return summary if not _looks_incomplete(summary) else _INCOMPLETE

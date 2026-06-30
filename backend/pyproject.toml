@@ -23,6 +23,7 @@ stt-whisper = ["faster-whisper>=1.0"]
 stt-deepgram = ["deepgram-sdk>=7.0"]            # paid STT drop-in (Sprint 8 Path B)
 llm-gemini  = ["google-genai>=1.0"]
 llm-ollama  = ["ollama>=0.3"]
+llm-groq    = ["groq>=0.11"]                    # free, fast cloud LLM drop-in (Sprint 8 Path B)
 tts-kokoro  = ["kokoro>=0.9"]
 tts-cartesia = ["cartesia>=3.0"]               # paid TTS drop-in (Sprint 8 Path B)
 tts-elevenlabs = ["elevenlabs>=2.0"]           # paid TTS drop-in (Sprint 8 Path B)
@@ -68,6 +69,7 @@ all = [
     "deepgram-sdk>=7.0",
     "google-genai>=1.0",
     "ollama>=0.3",
+    "groq>=0.11",
     "kokoro>=0.9",
     "cartesia>=3.0",
     "elevenlabs>=2.0",

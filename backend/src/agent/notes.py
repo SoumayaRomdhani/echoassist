@@ -14,6 +14,7 @@ from pathlib import Path
 
 from src.agent.jsonutil import extract_json
 from src.agent.state import ConversationState
+from src.providers.errors import ProviderError
 from src.providers.llm.base import LLMProvider
 from src.providers.types import Message, Role, ToolSpec
 
@@ -36,6 +37,14 @@ _SYSTEM = (
     f"{_RECORD_TOOL_NAME} tool with the fields. For fields already provided as SLOTS, "
     "copy the slot value. Infer strengths, concerns, and overall_fit only from the "
     "transcript; if there is no basis, use empty values or \"unknown\"."
+)
+
+_JSON_FALLBACK_SYSTEM = (
+    "You extract structured notes from a completed candidate phone-screening call. "
+    "Use ONLY what the candidate actually said. Return ONLY a JSON object matching "
+    "the provided schema keys; no markdown, no prose. For fields already provided "
+    "as SLOTS, copy the slot value. If there is no basis, use empty values or "
+    "\"unknown\"."
 )
 
 
@@ -106,7 +115,23 @@ class NotesExtractor:
 
     async def extract(self, state: ConversationState) -> dict:
         messages = [Message(Role.SYSTEM, _SYSTEM), Message(Role.USER, _render(state))]
-        response = await self._llm.chat(messages, tools=[self._tool])
+        try:
+            response = await self._llm.chat(messages, tools=[self._tool])
+        except ProviderError as exc:
+            # Some OpenAI-compatible providers/models can fail hard on function calling.
+            # Fall back to plain JSON so end-of-call persistence is not lost.
+            log.warning("notes tool call failed (%s); retrying as plain JSON", exc)
+            fallback_messages = [
+                Message(Role.SYSTEM, _JSON_FALLBACK_SYSTEM),
+                Message(
+                    Role.USER,
+                    "SCHEMA:\n"
+                    + json.dumps(self._schema, ensure_ascii=False)
+                    + "\n\n"
+                    + _render(state),
+                ),
+            ]
+            response = await self._llm.chat(fallback_messages)
 
         if response.tool_calls:
             notes = dict(response.tool_calls[0].arguments)

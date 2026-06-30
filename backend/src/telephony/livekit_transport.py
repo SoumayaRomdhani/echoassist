@@ -131,12 +131,15 @@ class LiveKitTransport(Transport):
         self._room: rtc.Room | None = None
         self._source: rtc.AudioSource | None = None
         self._audio_stream: rtc.AudioStream | None = None
+        self._audio_track: rtc.Track | None = None
+        self._audio_track_ready: asyncio.Event | None = None
         self._reader: asyncio.Task[None] | None = None
         self._caller_ready: asyncio.Event | None = None
         self._caller: rtc.RemoteParticipant | None = None
         self._frames_seen = 0
         self._last_frame_at: float | None = None
         self._last_rms = 0.0
+        self._reader_stopped: str | None = None
 
     # --- token ------------------------------------------------------------- #
     def _build_token(self) -> str:
@@ -151,6 +154,7 @@ class LiveKitTransport(Transport):
         self._loop = asyncio.get_running_loop()
         self._queue = asyncio.Queue()
         self._caller_ready = asyncio.Event()
+        self._audio_track_ready = asyncio.Event()
 
         self._room = rtc.Room()
 
@@ -160,6 +164,46 @@ class LiveKitTransport(Transport):
                 self._caller = participant
                 assert self._caller_ready is not None
                 self._caller_ready.set()
+
+        @self._room.on("track_published")
+        def _on_track_published(
+            publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant
+        ) -> None:
+            if publication.kind == rtc.TrackKind.KIND_AUDIO:
+                log.info(
+                    "caller %r published audio track source=%s subscribed=%s",
+                    getattr(participant, "identity", "?"),
+                    getattr(publication, "source", "?"),
+                    getattr(publication, "subscribed", "?"),
+                )
+                publication.set_subscribed(True)
+
+        @self._room.on("track_subscribed")
+        def _on_track_subscribed(
+            track: rtc.Track,
+            publication: rtc.RemoteTrackPublication,
+            participant: rtc.RemoteParticipant,
+        ) -> None:
+            if publication.kind != rtc.TrackKind.KIND_AUDIO:
+                return
+            if publication.source not in (
+                rtc.TrackSource.SOURCE_MICROPHONE,
+                rtc.TrackSource.SOURCE_UNKNOWN,
+            ):
+                return
+            if self._caller is None:
+                self._caller = participant
+                assert self._caller_ready is not None
+                self._caller_ready.set()
+            if self._audio_track is None:
+                self._audio_track = track
+                assert self._audio_track_ready is not None
+                self._audio_track_ready.set()
+                log.info(
+                    "subscribed to caller %r audio track %r",
+                    getattr(participant, "identity", "?"),
+                    getattr(track, "sid", "?"),
+                )
 
         await self._room.connect(
             self._url, self._build_token(), options=rtc.RoomOptions(auto_subscribe=True)
@@ -177,14 +221,24 @@ class LiveKitTransport(Transport):
         if self._caller is None and self._room.remote_participants:
             self._caller = next(iter(self._room.remote_participants.values()))
             self._caller_ready.set()
+        for participant in self._room.remote_participants.values():
+            for publication in participant.track_publications.values():
+                if publication.kind != rtc.TrackKind.KIND_AUDIO:
+                    continue
+                publication.set_subscribed(True)
+                if publication.track is not None and self._audio_track is None:
+                    self._audio_track = publication.track
+                    self._audio_track_ready.set()
         log.info("waiting up to %.0fs for a caller to join…", self._join_timeout)
         await asyncio.wait_for(self._caller_ready.wait(), timeout=self._join_timeout)
+        log.info("waiting for caller microphone track…")
+        await asyncio.wait_for(self._audio_track_ready.wait(), timeout=self._join_timeout)
 
         # Follow the caller's microphone track at 16 kHz mono, in 20 ms frames so the
         # energy endpointer sees the frame size its timing assumes.
-        self._audio_stream = rtc.AudioStream.from_participant(
-            participant=self._caller,
-            track_source=rtc.TrackSource.SOURCE_MICROPHONE,
+        assert self._audio_track is not None
+        self._audio_stream = rtc.AudioStream.from_track(
+            track=self._audio_track,
             sample_rate=_CAPTURE_SR,
             num_channels=1,
             frame_size_ms=self._cfg.frame_ms,
@@ -220,7 +274,11 @@ class LiveKitTransport(Transport):
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 — the stream ends when the caller leaves; not fatal
-            log.debug("audio stream reader stopped: %s", exc)
+            self._reader_stopped = f"{type(exc).__name__}: {exc}"
+            log.warning("LiveKit audio stream reader stopped: %s", self._reader_stopped)
+        else:
+            self._reader_stopped = "stream ended"
+            log.warning("LiveKit audio stream reader ended after %d frame(s)", self._frames_seen)
 
     # --- listen ------------------------------------------------------------ #
     async def listen(self) -> AsyncIterator[AudioChunk]:
@@ -236,16 +294,21 @@ class LiveKitTransport(Transport):
             try:
                 frame = await asyncio.wait_for(self._queue.get(), timeout=5.0)
             except TimeoutError:
+                reader_state = ""
+                if self._reader is not None and self._reader.done():
+                    reader_state = f" reader_stopped={self._reader_stopped or 'done'}."
                 if self._frames_seen == 0:
                     log.warning(
                         "still waiting for caller audio frames from LiveKit. "
-                        "Check the browser mic permission/mute state and close old meet tabs."
+                        "Check the browser mic permission/mute state and close old meet tabs.%s",
+                        reader_state,
                     )
                 else:
                     log.warning(
-                        "no new LiveKit audio frame for 5s (frames_seen=%d last_rms=%.4f).",
+                        "no new LiveKit audio frame for 5s (frames_seen=%d last_rms=%.4f).%s",
                         self._frames_seen,
                         self._last_rms,
+                        reader_state,
                     )
                 continue
             ended = self._endpointer.update(frame)
