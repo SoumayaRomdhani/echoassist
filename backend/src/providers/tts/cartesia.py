@@ -23,7 +23,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from src.providers.errors import ProviderConfigError, ProviderError, ProviderQuotaError
-from src.providers.tts.base import TTSProvider
+from src.providers.tts.base import TTSProvider, aligned_pcm16
 from src.providers.types import AudioChunk, AudioFormat
 
 if TYPE_CHECKING:
@@ -53,6 +53,8 @@ def _to_provider_error(exc: Exception) -> ProviderError:
 
 
 class CartesiaTTS(TTSProvider):
+    concurrent_warm = True  # cloud HTTP: warm the static-line cache in parallel
+
     def __init__(
         self,
         *,
@@ -112,9 +114,9 @@ class CartesiaTTS(TTSProvider):
                 **self._request_kwargs(text)
             )
             async with response_ctx as response:
-                async for chunk in response.iter_bytes():
-                    if chunk:
-                        yield AudioChunk(data=chunk, fmt=self.output_format)
+                # HTTP chunks can split a 16-bit sample → re-align before yielding.
+                async for chunk in aligned_pcm16(response.iter_bytes(), self.output_format):
+                    yield chunk
         except ProviderError:
             raise
         except Exception as exc:  # noqa: BLE001 — map any SDK/transport error to a clean ProviderError

@@ -142,6 +142,93 @@ async def test_deepgram_empty_utterance_yields_empty_final() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Shared: raw-PCM16 chunk alignment                                           #
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_aligned_pcm16_carries_odd_byte_boundaries() -> None:
+    """A 16-bit sample split across HTTP chunks must not yield an odd-length chunk."""
+    from src.providers.tts.base import aligned_pcm16
+
+    async def _src() -> AsyncIterator[bytes]:
+        for data in (b"\x01\x02\x03", b"\x04", b"", b"\x05\x06\x07\x08"):
+            await asyncio.sleep(0)
+            yield data
+
+    fmt = AudioFormat(sample_rate=24000)
+    chunks = [c async for c in aligned_pcm16(_src(), fmt)]
+
+    assert all(len(c.data) % 2 == 0 for c in chunks)                 # every chunk is sample-aligned
+    assert b"".join(c.data for c in chunks) == b"\x01\x02\x03\x04\x05\x06\x07\x08"  # no bytes lost
+
+
+# --------------------------------------------------------------------------- #
+# Deepgram TTS (Aura)                                                         #
+# --------------------------------------------------------------------------- #
+def test_deepgram_tts_missing_key_and_bad_rate_raise_config_error() -> None:
+    from src.providers.tts.deepgram import DeepgramTTS
+
+    with pytest.raises(ProviderConfigError):
+        DeepgramTTS(api_key=None)
+    with pytest.raises(ProviderConfigError):  # unsupported linear16 sample rate
+        DeepgramTTS(api_key="x", sample_rate=12345)
+
+
+async def _dg_audio_bytes(chunks: list[bytes]) -> AsyncIterator[bytes]:
+    for chunk in chunks:
+        await asyncio.sleep(0)
+        yield chunk
+
+
+def _fake_deepgram_speak_client(chunks: list[bytes]):
+    calls: list[dict] = []
+
+    def generate(**kwargs):
+        # Like the real SDK: an async-generator *function* — calling it returns the
+        # byte async-iterator directly (it is not awaited).
+        calls.append(kwargs)
+        return _dg_audio_bytes(chunks)
+
+    audio = SimpleNamespace(generate=generate)
+    speak = SimpleNamespace(v1=SimpleNamespace(audio=audio))
+    return SimpleNamespace(speak=speak, _calls=calls)
+
+
+@pytest.mark.asyncio
+async def test_deepgram_tts_streams_raw_pcm(monkeypatch) -> None:
+    pytest.importorskip("deepgram")
+    client = _fake_deepgram_speak_client([b"\x01\x02", b"\x03\x04"])
+    monkeypatch.setattr("deepgram.AsyncDeepgramClient", lambda **_kw: client)
+
+    from src.providers.tts.deepgram import DeepgramTTS
+
+    tts = DeepgramTTS(api_key="x", model="aura-2-thalia-en", sample_rate=24000)
+    chunk = await tts.synthesize("Hello there.")
+
+    assert chunk.data == b"\x01\x02\x03\x04"
+    assert chunk.fmt.sample_rate == 24000
+    # raw linear16 (container=none) at our wire rate was requested for the chosen voice/model
+    call = client._calls[0]
+    assert call["encoding"] == "linear16"
+    assert call["container"] == "none"
+    assert call["sample_rate"] == 24000
+    assert call["model"] == "aura-2-thalia-en"
+
+
+@pytest.mark.asyncio
+async def test_deepgram_tts_blank_text_yields_nothing(monkeypatch) -> None:
+    pytest.importorskip("deepgram")
+    client = _fake_deepgram_speak_client([b"\x01"])
+    monkeypatch.setattr("deepgram.AsyncDeepgramClient", lambda **_kw: client)
+
+    from src.providers.tts.deepgram import DeepgramTTS
+
+    tts = DeepgramTTS(api_key="x")
+    chunks = [c async for c in tts.synthesize_stream("   ")]
+    assert chunks == []
+    assert client._calls == []  # no API call for blank text
+
+
+# --------------------------------------------------------------------------- #
 # Cartesia TTS                                                                #
 # --------------------------------------------------------------------------- #
 def test_cartesia_missing_key_and_voice_raise_config_error() -> None:

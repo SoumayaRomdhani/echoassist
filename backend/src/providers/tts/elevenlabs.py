@@ -21,7 +21,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from src.providers.errors import ProviderConfigError, ProviderError, ProviderQuotaError
-from src.providers.tts.base import TTSProvider
+from src.providers.tts.base import TTSProvider, aligned_pcm16
 from src.providers.types import AudioChunk, AudioFormat
 
 if TYPE_CHECKING:  # typing only — never import the SDK at module load
@@ -53,6 +53,8 @@ def _to_provider_error(exc: Exception) -> ProviderError:
 
 
 class ElevenLabsTTS(TTSProvider):
+    concurrent_warm = True  # cloud HTTP: warm the static-line cache in parallel
+
     def __init__(
         self,
         *,
@@ -98,9 +100,9 @@ class ElevenLabsTTS(TTSProvider):
                 model_id=self._model,
                 output_format=self._output_format,
             )
-            async for chunk in stream:
-                if chunk:
-                    yield AudioChunk(data=chunk, fmt=self.output_format)
+            # HTTP chunks can split a 16-bit sample → re-align before yielding.
+            async for chunk in aligned_pcm16(stream, self.output_format):
+                yield chunk
         except ProviderError:
             raise
         except Exception as exc:  # noqa: BLE001 — map any SDK/transport error to a clean ProviderError

@@ -60,6 +60,7 @@ class LLMProviderName(StrEnum):
 
 class TTSProviderName(StrEnum):
     kokoro = "kokoro"
+    deepgram = "deepgram"
     cartesia = "cartesia"
     elevenlabs = "elevenlabs"
 
@@ -133,6 +134,14 @@ class Settings(BaseSettings):
     kokoro_voice: str = "af_heart"
     kokoro_speed: float = 1.0
 
+    # --- TTS: Deepgram Aura (paid drop-in, Sprint 8 Path B) ---
+    # Its own key, separate from STT's DEEPGRAM_API_KEY, so TTS credits/usage stay on a
+    # distinct billing line; falls back to DEEPGRAM_API_KEY when unset. The voice is the
+    # model; no separate voice id. List at https://developers.deepgram.com/docs/tts-models
+    deepgram_tts_api_key: str | None = None
+    deepgram_tts_model: str = "aura-2-thalia-en"   # e.g. aura-2-thalia-en | aura-2-asteria-en
+    deepgram_tts_sample_rate: int = 24000          # 8000|16000|24000|32000|48000 (linear16)
+
     # --- TTS: Cartesia (paid drop-in, Sprint 8 Path B) ---
     cartesia_api_key: str | None = None
     cartesia_model: str = "sonic-2"
@@ -178,6 +187,17 @@ class Settings(BaseSettings):
     # would give more room (tracked multilingual follow-up).
     grounding_min_confidence: float = 0.05
     redact_pii: bool = True                # mask emails/phones before persistence
+
+    # --- Latency optimizations (AMELIORATIONS.md — Axe 1) ---
+    # Pre-synthesize the flow's deterministic lines (greeting, questions, close…) in
+    # the background during the disclosure, so most agent turns spend ~0 ms on TTS
+    # (L5). On by default and transparent — a cached line is byte-for-byte the inner
+    # provider's output, only ready sooner.
+    tts_cache_static: bool = True
+    # Skip the model's "decide to search" tool round-trip on grounded answers: retrieve
+    # first, then read the passages in one LLM call (−1 round-trip/turn, L3). Screening
+    # Q&A always needs the knowledge base, so the tool hop is pure latency.
+    grounding_retrieve_then_read: bool = True
 
     # --- Backend API (Sprint 6) ---
     api_host: str = "0.0.0.0"              # noqa: S104 — bind all interfaces (containerised service)
@@ -324,6 +344,14 @@ def build_tts(settings: Settings | None = None) -> TTSProvider:
             lang_code=settings.kokoro_lang_code,
             voice=settings.kokoro_voice,
             speed=settings.kokoro_speed,
+        )
+    if settings.tts_provider is TTSProviderName.deepgram:
+        from src.providers.tts.deepgram import DeepgramTTS
+
+        return DeepgramTTS(
+            api_key=settings.deepgram_tts_api_key or settings.deepgram_api_key,
+            model=settings.deepgram_tts_model,
+            sample_rate=settings.deepgram_tts_sample_rate,
         )
     if settings.tts_provider is TTSProviderName.cartesia:
         from src.providers.tts.cartesia import CartesiaTTS

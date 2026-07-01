@@ -15,6 +15,25 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`ROADMAP.md`](ROADMAP.md) for the 
 
 ## Status
 
+### Sprint 7 ✅ Frontend dashboard (ACTEEK)
+- **React + Vite + TypeScript** dashboard in [`frontend/`](frontend/README.md):
+  the ACTEEK marketplace shell with EchoAssist as a Ready agent → an agent detail
+  view with **Calls** (list + start), **CallDetail** (live transcript, structured
+  notes, summary, consent audit trail), **Metrics**, and **DomainConfig** (flow +
+  document upload).
+- **On brand**: Tailwind v4 mapped to the ACTEEK `--c-*` tokens, Space Grotesk +
+  Manrope, dark-mode first with a light toggle (`frontend/src/styles/tokens.css`).
+- **Wired to the backend**: REST via TanStack Query, live updates via the
+  `/ws/calls/{id}` WebSocket. An in-browser **mock backend** (MSW) makes the whole
+  dashboard demoable offline (`VITE_USE_MOCKS`); point `VITE_API_BASE_URL` at the
+  real API to go live.
+- **ACTEEK SSO seam**: a login screen + auth guard with a clearly-marked dev stub
+  where the real ACTEEK identity provider plugs in (auth is *integrated, not rebuilt*).
+- Verified: `npm run typecheck` / `lint` / `test` (Vitest) / `build` all green.
+- Follow-up (the other half of the Sprint 7 DoD): the reproducible **benchmark
+  report** (latency percentiles, WER, Recall@K/nDCG, note accuracy, summary
+  faithfulness, A/B provider swaps).
+
 ### Sprint 6 ✅ Backend API + observability
 - **FastAPI** REST (`api/`): campaigns, calls, notes, summaries, domains, and
   document upload (which triggers RAG re-ingest). `POST /calls` runs a screening
@@ -105,7 +124,7 @@ candidate's answer, responds, and **speaks** the reply on your machine.
 ```ini
 # backend/.env
 LLM_PROVIDER=ollama        # gemini | ollama | claude
-TTS_PROVIDER=kokoro        # kokoro | cartesia | elevenlabs
+TTS_PROVIDER=kokoro        # kokoro | deepgram | cartesia | elevenlabs
 STT_PROVIDER=whisper_local # whisper_local | deepgram
 DOMAIN=screening           # screening | hr | helpdesk | credit_transfer
 ```
