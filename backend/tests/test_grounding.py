@@ -129,6 +129,74 @@ async def test_no_confident_chunk_never_invents_an_answer() -> None:
     assert "made-up" not in answer.text.lower()
 
 
+# --- Retrieve-then-read path (L3): retrieve first, read in a single LLM call ------- #
+def _read_responder(llm, retriever) -> GroundedResponder:
+    return GroundedResponder(
+        llm, retriever, system_prompt="You are a screening assistant.", retrieve_then_read=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_retrieve_then_read_answers_in_one_llm_call() -> None:
+    chunk = ScoredChunk(Chunk("interview_process.md#0", "interview_process.md", "...", 0), 1.0)
+    retriever = FakeRetriever([chunk])
+    llm = ScriptedLLM([LLMResponse(text="Four stages [interview_process.md].")])
+
+    answer = await _read_responder(llm, retriever).answer("What is the interview process?")
+
+    assert retriever.queries == ["What is the interview process?"]  # direct retrieve, no tool hop
+    assert llm.calls == 1                          # one read call (the tool loop took two)
+    assert llm.tools_offered == [False]            # no tool offered on the read path
+    assert answer.tool_calls == 0
+    assert answer.citations == ["interview_process.md"]
+    assert answer.text == "Four stages." and answer.retrieved == [chunk]
+
+
+@pytest.mark.asyncio
+async def test_retrieve_then_read_refuses_without_calling_the_llm() -> None:
+    llm = ScriptedLLM([])  # no confident chunk -> the LLM must never be reached
+    answer = await _read_responder(llm, FakeRetriever([])).answer("Off-topic?")
+
+    assert llm.calls == 0
+    assert answer.retrieved == [] and answer.citations == []
+    assert "recruiter" in answer.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_retrieve_then_read_gate_filters_weak_chunks() -> None:
+    weak = ScoredChunk(Chunk("x.md#0", "x.md", "irrelevant", 0), -5.0)  # confidence ~0.007
+    llm = ScriptedLLM([])  # gate drops the weak chunk -> refuse without an LLM call
+    responder = GroundedResponder(
+        llm, FakeRetriever([weak]), system_prompt="s", min_confidence=0.1, retrieve_then_read=True
+    )
+    answer = await responder.answer("What's the weather in Paris?")
+
+    assert llm.calls == 0 and answer.retrieved == []
+    assert "recruiter" in answer.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_retrieve_then_read_streaming_streams_grounded_answer() -> None:
+    chunk = ScoredChunk(Chunk("remote_work_policy.md#0", "remote_work_policy.md", ".", 0), 2.0)
+    llm = ScriptedLLM([LLMResponse(text="It is fully remote [remote_work_policy.md].")])
+
+    responder = _read_responder(llm, FakeRetriever([chunk]))
+    deltas = [d async for d in responder.answer_streaming("is it remote?")]
+
+    assert "".join(deltas) == "It is fully remote [remote_work_policy.md]."
+    assert llm.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_retrieve_then_read_streaming_refuses_without_confident_chunk() -> None:
+    llm = ScriptedLLM([])
+    responder = _read_responder(llm, FakeRetriever([]))
+    deltas = [d async for d in responder.answer_streaming("Off-topic?")]
+
+    assert "recruiter" in "".join(deltas).lower()
+    assert llm.calls == 0
+
+
 def test_search_tool_schema_is_well_formed() -> None:
     assert SEARCH_TOOL.name == "search_knowledge_base"
     assert SEARCH_TOOL.parameters["required"] == ["query"]

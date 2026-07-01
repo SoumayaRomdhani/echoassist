@@ -25,6 +25,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from src.agent.consent import ConsentDecision, classify_consent
 from src.agent.dialogue import DialogueManager
@@ -33,6 +34,9 @@ from src.providers.llm.base import LLMProvider
 from src.providers.stt.base import STTProvider
 from src.providers.tts.base import TTSProvider
 from src.providers.types import AudioChunk, Message, Role
+
+if TYPE_CHECKING:
+    from src.agent.streaming import StreamTimings
 
 log = logging.getLogger("echoassist.orchestrator")
 
@@ -200,21 +204,66 @@ class VoicePipeline:
         audio_out = await self.speak(turn.text)
         return InterviewTurn(transcript.text, turn.text, audio_out, turn.ended, turn.citations)
 
-    async def interview_turn_streaming(self, audio) -> tuple[str, AsyncIterator[AudioChunk]]:
-        """Streaming interview turn: returns (caller transcript, agent audio stream).
+    @property
+    def interview_finished(self) -> bool:
+        """Whether the interview reached its close.
+
+        Meaningful after an :meth:`interview_turn_streaming` audio stream is fully
+        consumed — the streaming turn advances the dialogue as the stream is drained.
+        """
+        return self._dialogue is not None and self._dialogue.finished
+
+    async def interview_turn_streaming(
+        self, audio
+    ) -> tuple[str, AsyncIterator[AudioChunk], StreamTimings]:
+        """Streaming interview turn: returns (caller transcript, agent audio stream, timings).
 
         The agent's audio starts at the first complete sentence; grounded answers
         stream from the LLM. After consuming the stream, ``dialogue.finished`` tells
-        you whether the interview ended and the recorded reply is in the call state.
+        you whether the interview ended, the recorded reply is in the call state, and
+        ``timings`` holds the per-turn latency breakdown (STT / LLM / TTS / TTFA).
         """
         from src.agent.grounding import strip_citations
-        from src.agent.streaming import synthesize_streaming
+        from src.agent.streaming import StreamTimings, synthesize_streaming
 
         self._require_interview_ready()
-        transcript = await self._stt.transcribe(audio)
+
+        # Timestamp the caller's audio as it flows so we can separate *human* time
+        # (waiting to speak, speaking + the VAD silence tail) from machine STT latency:
+        # the first chunk marks speech onset, the last marks the endpoint (caller stopped).
+        marks: dict[str, float | None] = {"onset": None, "endpoint": None}
+
+        async def _timed_audio() -> AsyncIterator[AudioChunk]:
+            if not hasattr(audio, "__aiter__"):
+                yield audio  # single pre-recorded chunk (replay/tests): no live capture timing
+                return
+            async for chunk in audio:
+                now = time.perf_counter()
+                if marks["onset"] is None:
+                    marks["onset"] = now
+                marks["endpoint"] = now
+                yield chunk
+
+        start = time.perf_counter()
+        transcript = await self._stt.transcribe(_timed_audio())
+        done = time.perf_counter()
+
+        onset, endpoint = marks["onset"], marks["endpoint"]
+        if endpoint is None:  # no live stream (single chunk): report it all as STT
+            timings = StreamTimings(stt_ms=(done - start) * 1000)
+            endpoint = done
+        else:
+            timings = StreamTimings(
+                wait_ms=(onset - start) * 1000,
+                speech_ms=(endpoint - onset) * 1000,
+                stt_ms=(done - endpoint) * 1000,   # STT finalize after the caller stopped
+            )
+        # ttfa/llm/tts are measured from the endpoint, so ttfa = the felt reply latency.
         text_stream = self._dialogue.handle_turn_streaming(transcript.text)
-        audio_stream = synthesize_streaming(text_stream, self._tts, clean=strip_citations)
-        return transcript.text, audio_stream
+        audio_stream = synthesize_streaming(
+            text_stream, self._tts, clean=strip_citations, timings=timings, start=endpoint
+        )
+        return transcript.text, audio_stream, timings
 
     async def speak(self, text: str) -> AudioChunk:
         """Synthesize agent speech (no conversation-history side effects)."""

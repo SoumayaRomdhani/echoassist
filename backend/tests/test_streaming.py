@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from time import perf_counter
 
 import pytest
 
-from src.agent.streaming import split_complete_sentences, synthesize_streaming
+from src.agent.streaming import StreamTimings, split_complete_sentences, synthesize_streaming
 from src.providers.tts.base import TTSProvider
 from src.providers.types import AudioChunk, AudioFormat
 
@@ -45,6 +46,26 @@ async def test_streaming_synthesizes_each_sentence_in_order() -> None:
 
     assert tts.spoken == ["The cat sat.", "The dog ran."]
     assert len(chunks) == 2
+
+
+@pytest.mark.asyncio
+async def test_records_per_turn_timing_breakdown() -> None:
+    import asyncio
+
+    async def stream() -> AsyncIterator[str]:
+        await asyncio.sleep(0.01)          # "thinking" (classify/LLM) before the first text
+        yield "First sentence. "
+        yield "Second sentence."
+
+    timings = StreamTimings(stt_ms=5.0)    # STT already measured by the caller
+    start = perf_counter()
+    async for _ in synthesize_streaming(stream(), RecordingTTS(), timings=timings, start=start):
+        pass
+
+    assert timings.llm_ms > 0 and timings.tts_ms >= 0 and timings.ttfa_ms > 0
+    # ttfa is exactly the critical path: stt + llm + tts (to the first audio chunk)
+    assert timings.ttfa_ms == pytest.approx(timings.stt_ms + timings.llm_ms + timings.tts_ms)
+    assert timings.total_ms >= timings.ttfa_ms
 
 
 @pytest.mark.asyncio

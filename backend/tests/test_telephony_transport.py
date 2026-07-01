@@ -83,3 +83,45 @@ async def test_send_interruptible_default_plays_fully_and_reports_no_barge_in() 
     barged = await transport.send_interruptible(_chunk("hello"))
     assert barged is False
     assert [c.data for c in transport.sent] == [b"hello"]
+
+
+class _BargingTransport(_FakeTransport):
+    """Reports a barge-in when it plays ``barge_on``; records the chunks it played."""
+
+    def __init__(self, *, barge_on: bytes) -> None:
+        super().__init__([])
+        self._barge_on = barge_on
+
+    async def send_interruptible(self, audio: AudioChunk) -> bool:
+        self.sent.append(audio)
+        return audio.data == self._barge_on
+
+
+@pytest.mark.asyncio
+async def test_send_stream_interruptible_stops_playback_but_drains_on_barge_in() -> None:
+    transport = _BargingTransport(barge_on=b"two")
+    pulled: list[bytes] = []
+
+    async def _stream() -> AsyncIterator[AudioChunk]:
+        for text in ("one", "two", "three", "four"):
+            pulled.append(text.encode("utf-8"))
+            yield _chunk(text)
+
+    barged = await transport.send_stream_interruptible(_stream())
+
+    assert barged is True
+    assert [c.data for c in transport.sent] == [b"one", b"two"]   # stopped playing after the barge
+    assert pulled == [b"one", b"two", b"three", b"four"]          # ...but drained the whole stream
+
+
+@pytest.mark.asyncio
+async def test_send_stream_interruptible_plays_all_when_no_barge_in() -> None:
+    transport = _FakeTransport([])
+
+    async def _stream() -> AsyncIterator[AudioChunk]:
+        for text in ("a", "b", "c"):
+            yield _chunk(text)
+
+    barged = await transport.send_stream_interruptible(_stream())
+    assert barged is False
+    assert [c.data for c in transport.sent] == [b"a", b"b", b"c"]

@@ -28,7 +28,13 @@ class EndpointConfig:
     frame_ms: int = 20
     energy_threshold: float = 0.015   # RMS over [-1, 1]; a frame at/above this is speech
     onset_frames: int = 3             # consecutive speech frames that confirm speech started
-    silence_ms: int = 700             # trailing silence after speech that ends the utterance
+    # Adaptive endpoint (AMELIORATIONS.md, L4): instead of one fixed 700 ms wait, end
+    # the turn faster once the caller has clearly delivered a full thought, but give a
+    # short reply/hesitation a touch more room — keeping the wait in the 450-550 ms band.
+    silence_ms: int = 550             # trailing-silence endpoint after a short utterance
+    min_silence_ms: int = 450         # shorter endpoint once a full thought has been spoken
+    long_utterance_ms: int = 1500     # speech beyond this counts as "a full thought"
+    adaptive: bool = True             # adapt the endpoint to utterance length
     max_utterance_ms: int = 15000     # hard cap so a noisy line can't listen forever
 
 
@@ -51,6 +57,7 @@ class Endpointer:
         self._silence_run = 0
         self._started = False
         self._elapsed_ms = 0
+        self._speech_ms = 0
 
     @property
     def started(self) -> bool:
@@ -70,10 +77,20 @@ class Endpointer:
             return False
 
         self._elapsed_ms += self._cfg.frame_ms
-        self._silence_run = 0 if is_speech else self._silence_run + 1
-        if self._silence_run * self._cfg.frame_ms >= self._cfg.silence_ms:
+        if is_speech:
+            self._speech_ms += self._cfg.frame_ms
+            self._silence_run = 0
+        else:
+            self._silence_run += 1
+        if self._silence_run * self._cfg.frame_ms >= self._endpoint_silence_ms():
             return True
         return self._elapsed_ms >= self._cfg.max_utterance_ms
+
+    def _endpoint_silence_ms(self) -> int:
+        """The trailing-silence the current utterance needs to end (shorter once long)."""
+        if self._cfg.adaptive and self._speech_ms >= self._cfg.long_utterance_ms:
+            return self._cfg.min_silence_ms
+        return self._cfg.silence_ms
 
 
 async def watch_for_barge_in(

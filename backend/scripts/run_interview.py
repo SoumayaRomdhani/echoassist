@@ -95,6 +95,7 @@ async def main() -> None:
         responder=GroundedResponder(
             llm, retriever, system_prompt=domain.system_prompt,
             min_confidence=settings.grounding_min_confidence,
+            retrieve_then_read=settings.grounding_retrieve_then_read,
         ),
         domain=domain,
         state=state,
@@ -128,7 +129,7 @@ async def main() -> None:
         for path in answer_paths:
             # Streaming turn: audio starts at the first sentence (grounded answers
             # stream from the LLM), instead of waiting for the whole reply.
-            caller_text, audio_stream = await pipeline.interview_turn_streaming(
+            caller_text, audio_stream, timings = await pipeline.interview_turn_streaming(
                 stream_wav(path, realtime=realtime)
             )
             print(f"\n{bold('CALLER:')} {caller_text}")
@@ -137,6 +138,11 @@ async def main() -> None:
                     await play(chunk)
             reply_text = state.transcript[-1]["text"] if state.transcript else ""
             print(f"{bold('AGENT:')} {reply_text}")
+            print(dim(
+                f"latency  stt={timings.stt_ms:.0f}ms  llm={timings.llm_ms:.0f}ms  "
+                f"tts={timings.tts_ms:.0f}ms  →  reply {timings.ttfa_ms:.0f}ms after speech"
+                f"   (speech {timings.speech_ms/1000:.1f}s)"
+            ))
             if dialogue.finished:
                 break
 

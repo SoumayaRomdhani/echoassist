@@ -213,11 +213,13 @@ async def test_interview_turn_streaming_uses_the_streaming_path() -> None:
                              dialogue=dialogue)
     pipeline._consent_granted = True  # bypass the consent gate for the test
 
-    transcript, audio_stream = await pipeline.interview_turn_streaming(_audio())
+    transcript, audio_stream, timings = await pipeline.interview_turn_streaming(_audio())
     chunks = [chunk async for chunk in audio_stream]
 
     assert transcript == "is the role remote?"
     assert len(chunks) >= 2                                   # streamed sentence-by-sentence
+    # the turn recorded a latency breakdown; ttfa is the felt path (stt+llm+tts)
+    assert timings.ttfa_ms >= 0 and timings.total_ms >= 0
     spoken = [c.data.decode() for c in chunks]                # FakeTTS encodes the text it spoke
     assert any("fully remote" in s for s in spoken)
     assert all("[remote_work_policy.md]" not in s for s in spoken)  # citation stripped before TTS

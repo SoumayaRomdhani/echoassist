@@ -69,6 +69,52 @@ def test_max_utterance_caps_continuous_speech() -> None:
     assert results == [False, False, False, False, True]
 
 
+def _adaptive_cfg(**overrides) -> EndpointConfig:
+    base = dict(
+        frame_ms=20, silence_ms=600, min_silence_ms=400,
+        long_utterance_ms=1000, onset_frames=1, adaptive=True,
+    )
+    return EndpointConfig(**{**base, **overrides})
+
+
+def test_long_utterance_ends_at_the_shorter_adaptive_endpoint() -> None:
+    cfg = _adaptive_cfg()
+    ep = Endpointer(cfg)
+    ep.update(_speech())                                 # onset
+    for _ in range(50):                                  # 1000 ms of speech -> "a full thought"
+        ep.update(_speech())
+
+    needed = cfg.min_silence_ms // cfg.frame_ms          # 20 silent frames -> 400 ms
+    for _ in range(needed - 1):
+        assert ep.update(_silence()) is False
+    assert ep.update(_silence()) is True                 # ended early at min_silence_ms
+
+
+def test_short_utterance_holds_the_longer_endpoint() -> None:
+    cfg = _adaptive_cfg()
+    ep = Endpointer(cfg)
+    ep.update(_speech())                                 # onset
+    for _ in range(10):                                  # only 200 ms -> a short reply/hesitation
+        ep.update(_speech())
+
+    # 400 ms of silence is NOT enough for a short utterance — it waits the full silence_ms.
+    for _ in range(cfg.silence_ms // cfg.frame_ms - 1):  # 29 silent frames -> 580 ms
+        assert ep.update(_silence()) is False
+    assert ep.update(_silence()) is True                 # ends only at the full 600 ms
+
+
+def test_adaptive_off_keeps_the_fixed_endpoint_after_a_long_utterance() -> None:
+    cfg = _adaptive_cfg(adaptive=False)
+    ep = Endpointer(cfg)
+    ep.update(_speech())                                 # onset
+    for _ in range(50):                                  # long utterance, but adaptivity is off
+        ep.update(_speech())
+
+    for _ in range(cfg.silence_ms // cfg.frame_ms - 1):  # full 600 ms required despite the length
+        assert ep.update(_silence()) is False
+    assert ep.update(_silence()) is True
+
+
 @pytest.mark.asyncio
 async def test_barge_in_detected_when_caller_speaks_over_playback() -> None:
     monitor = Endpointer(EndpointConfig(onset_frames=2))

@@ -46,6 +46,44 @@ def load_states(domain: DomainConfig) -> list[State]:
     ]
 
 
+def static_lines(domain: DomainConfig) -> list[str]:
+    """Every deterministic line the agent can speak — for TTS pre-synthesis (L5).
+
+    Mirrors verbatim what the orchestrator and this manager say, so the warmed
+    strings hit the cache exactly: the consent-phase lines (greeting, re-prompt,
+    decline) plus, for the interview, each state ``prompt``, the bare transition
+    ``ack`` and the ``Sorry —`` re-ask. The disclosure is excluded: it is spoken
+    once, synchronously, before any background warm could help. Grounded answers
+    are dynamic and excluded.
+
+    The ack is warmed **on its own** ("Thanks."), not joined to the next question:
+    the streaming path (``synthesize_streaming``) splits "Thanks. <question>" on the
+    sentence boundary and synthesizes each half separately, so the bare ack + the
+    bare prompt are the strings actually requested. Warming the joined form would
+    never be hit on the live path (and would burn an extra TTS call per question).
+
+    Returns lines de-duplicated, in roughly the order they are first spoken, so a
+    warm covers the soonest-needed lines first.
+    """
+    lines: list[str] = [
+        line.strip()
+        for line in (domain.greeting, domain.consent_reprompt, domain.consent_decline)
+        if line and line.strip()
+    ]
+    ack = str(domain.flow.get("transition_ack") or "").strip()
+    if ack:
+        lines.append(ack)                                # spoken alone before an advanced question
+    for state in load_states(domain):
+        if not state.prompt:
+            continue
+        lines.append(state.prompt)                       # start / skip / re-ask / done-advance
+        if state.type == "question":
+            lines.append(f"Sorry — {state.prompt}")      # re-ask after an unclear answer
+
+    seen: set[str] = set()
+    return [line for line in lines if not (line in seen or seen.add(line))]
+
+
 # --------------------------------------------------------------------------- #
 # Turn classification                                                         #
 # --------------------------------------------------------------------------- #

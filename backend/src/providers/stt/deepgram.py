@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
@@ -63,6 +64,32 @@ def _to_transcript(result: Any, *, language: str | None) -> Transcript | None:
         is_final=bool(getattr(result, "is_final", False)),
         confidence=getattr(alt, "confidence", None),
         language=language,
+    )
+
+
+def _log_finalize_timing(marks: dict[str, float]) -> None:
+    """DIAGNOSTIC: log where the post-speech STT latency goes (one line per turn).
+
+    ``close→final`` is Deepgram's real finalize (server-side); ``final→socket_end`` is
+    time we spend *waiting for the websocket to close* after the transcript is already in
+    hand — pure waste if it's large (would justify returning on the final instead).
+    """
+    start = marks.get("start")
+    if start is None:
+        return
+
+    def since(name: str) -> float:
+        return (marks[name] - start) * 1000 if name in marks else -1.0
+
+    def delta(a: str, b: str) -> float:
+        return (marks[b] - marks[a]) * 1000 if a in marks and b in marks else -1.0
+
+    log.info(
+        "deepgram finalize: connect=%.0fms audio_sent=%.0fms close_sent=%.0fms "
+        "last_final=%.0fms socket_end=%.0fms | close→final=%.0fms final→socket_end=%.0fms",
+        since("connected"), since("audio_sent"), since("close_sent"),
+        since("last_final"), since("socket_end"),
+        delta("close_sent", "last_final"), delta("last_final", "socket_end"),
     )
 
 
@@ -132,6 +159,8 @@ class DeepgramSTT(STTProvider):
 
         segments: list[str] = []
         last_confidence: float | None = None
+        # DIAGNOSTIC: timestamp the finalize path to see where post-speech latency goes.
+        marks: dict[str, float] = {"start": time.perf_counter()}
         try:
             connection = self._client.listen.v1.connect(
                 **self._connect_options(
@@ -139,6 +168,7 @@ class DeepgramSTT(STTProvider):
                 )
             )
             async with connection as socket:
+                marks["connected"] = time.perf_counter()
 
                 async def _pump() -> None:
                     # Stream the utterance, then signal end-of-stream so Deepgram
@@ -147,7 +177,9 @@ class DeepgramSTT(STTProvider):
                     async for chunk in audio_iter:
                         if chunk.data:
                             await socket.send_media(chunk.data)
+                    marks["audio_sent"] = time.perf_counter()
                     await socket.send_close_stream()
+                    marks["close_sent"] = time.perf_counter()
 
                 pump = asyncio.create_task(_pump())
                 try:
@@ -156,6 +188,7 @@ class DeepgramSTT(STTProvider):
                         if transcript is None:
                             continue
                         if transcript.is_final:
+                            marks["last_final"] = time.perf_counter()
                             segments.append(transcript.text)
                             last_confidence = transcript.confidence
                             # Surface the finalized segment as liveness; the single
@@ -170,10 +203,13 @@ class DeepgramSTT(STTProvider):
                             yield transcript
                 finally:
                     await pump
+            marks["socket_end"] = time.perf_counter()
         except ProviderError:
             raise
         except Exception as exc:  # noqa: BLE001 — map any SDK/transport error to a clean ProviderError
             raise _to_provider_error(exc) from exc
+
+        _log_finalize_timing(marks)
 
         yield Transcript(
             text=" ".join(s for s in segments if s).strip(),
