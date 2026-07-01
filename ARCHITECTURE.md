@@ -60,7 +60,7 @@ Offline pipeline (not in hot path): documents → chunk → embed (BGE-M3) → i
 src/providers/
   stt/  base.py  whisper_local.py(default)  deepgram.py(paid)
   llm/  base.py  ollama_local.py(default)   gemini.py(easy free dev)  claude.py(paid)
-  tts/  base.py  kokoro_local.py(default)   cartesia.py(paid)  elevenlabs.py(paid)
+  tts/  base.py  kokoro_local.py(default)   deepgram.py(paid)  cartesia.py(paid)  elevenlabs.py(paid)
 ```
 
 Interfaces:
@@ -72,7 +72,7 @@ Factory in `config/settings.py` reads env and returns the chosen implementation:
 ```
 STT_PROVIDER = whisper_local | deepgram          # default: whisper_local
 LLM_PROVIDER = ollama | gemini | claude          # default: ollama (gemini for easiest dev start)
-TTS_PROVIDER = kokoro | cartesia | elevenlabs    # default: kokoro
+TTS_PROVIDER = kokoro | deepgram | cartesia | elevenlabs    # default: kokoro
 DOMAIN       = screening | hr | helpdesk | credit_transfer   # default: screening
 ```
 
@@ -88,7 +88,7 @@ DOMAIN       = screening | hr | helpdesk | credit_transfer   # default: screenin
 | Embeddings | BGE-M3 (dense+sparse) | Cohere / Voyage | Hybrid retrieval, multilingual |
 | Vector DB | Qdrant | Pinecone | Per-domain chunk search |
 | Reranker | bge-reranker-v2-m3 | Cohere Rerank | Reorder candidates |
-| TTS | Kokoro | Cartesia / ElevenLabs | Text→speech, streaming |
+| TTS | Kokoro | Deepgram Aura / Cartesia / ElevenLabs | Text→speech, streaming |
 
 ### Backend
 | Item | Choice |

@@ -25,6 +25,7 @@ llm-gemini  = ["google-genai>=1.0"]
 llm-ollama  = ["ollama>=0.3"]
 llm-groq    = ["groq>=0.11"]                    # free, fast cloud LLM drop-in (Sprint 8 Path B)
 tts-kokoro  = ["kokoro>=0.9"]
+tts-deepgram = ["deepgram-sdk>=7.0"]           # paid TTS drop-in — same SDK as stt-deepgram (Sprint 8 Path B)
 tts-cartesia = ["cartesia>=3.0"]               # paid TTS drop-in (Sprint 8 Path B)
 tts-elevenlabs = ["elevenlabs>=2.0"]           # paid TTS drop-in (Sprint 8 Path B)
 # RAG core (Sprint 2): hybrid embeddings + reranker (FastEmbed) + vector DB (Qdrant).
