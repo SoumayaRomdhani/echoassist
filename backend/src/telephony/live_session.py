@@ -14,8 +14,10 @@ then ``aclose()``); this module owns the pipeline + state it builds here.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
+from typing import TYPE_CHECKING
 
 from config.settings import (
     Settings,
@@ -40,6 +42,9 @@ from src.providers.types import AudioChunk
 from src.storage.db import init_db, make_sessionmaker
 from src.storage.queries import log_consent
 from src.telephony.transport import Transport
+
+if TYPE_CHECKING:
+    from src.rag.retriever import Retriever
 
 log = logging.getLogger("echoassist.live")
 
@@ -175,15 +180,38 @@ async def _finalize(settings: Settings, llm: LLMProvider, state: ConversationSta
         await engine.dispose()
 
 
+async def _warm_retriever(retriever: Retriever) -> None:
+    """Load the RAG models (dense/sparse embedder + reranker) off the critical path.
+
+    They otherwise load lazily on the *first* candidate question — a ~30 s cold start at
+    the worst moment, mid-call. Running one throwaway retrieval in the background at
+    session start moves that cost into the disclosure + early slot questions (which never
+    hit RAG), so the first real question finds the stack hot. Runs the sync retrieve in a
+    worker thread (as the live path does) and is best-effort: a failure (e.g. Qdrant down)
+    is logged and the models simply load on demand.
+    """
+    try:
+        await asyncio.to_thread(retriever.retrieve, "warmup")
+        log.info("RAG stack warmed (embedder + reranker loaded)")
+    except asyncio.CancelledError:
+        raise  # the session is shutting down — stop warming
+    except Exception as exc:  # noqa: BLE001 — warming is best-effort, never break the call
+        log.warning("RAG warm failed (%s); models will load on the first question.", exc)
+
+
 def _build_dialogue(
     settings: Settings, domain: DomainConfig, llm: LLMProvider, state: ConversationState
-) -> tuple[DialogueManager, StateStore]:
-    """Wire the dialogue manager (classifier + grounded responder + Redis state)."""
+) -> tuple[DialogueManager, StateStore, Retriever]:
+    """Wire the dialogue manager (classifier + grounded responder + Redis state).
+
+    Also returns the retriever so the caller can warm its models off the critical path.
+    """
     store = build_state_store(settings)
+    retriever = build_retriever(settings)
     dialogue = DialogueManager(
         classifier=LLMTurnClassifier(llm),
         responder=GroundedResponder(
-            llm, build_retriever(settings), system_prompt=domain.system_prompt,
+            llm, retriever, system_prompt=domain.system_prompt,
             min_confidence=settings.grounding_min_confidence,
         ),
         domain=domain,
@@ -191,7 +219,7 @@ def _build_dialogue(
         store=store,
         redact=settings.redact_pii,
     )
-    return dialogue, store
+    return dialogue, store, retriever
 
 
 async def run_live_session(
@@ -217,9 +245,13 @@ async def run_live_session(
 
     state: ConversationState | None = None
     store: StateStore | None = None
+    rag_warm_task: asyncio.Task[None] | None = None
     if interview:
         state = ConversationState(call_id=call_id)
-        dialogue, store = _build_dialogue(settings, domain, llm, state)
+        dialogue, store, retriever = _build_dialogue(settings, domain, llm, state)
+        # Warm the RAG models in the background now, so the first candidate question
+        # doesn't pay their ~30 s cold load mid-call.
+        rag_warm_task = asyncio.create_task(_warm_retriever(retriever))
         pipeline = VoicePipeline(
             build_stt(settings), llm, build_tts(settings), domain, dialogue=dialogue
         )
@@ -235,6 +267,8 @@ async def run_live_session(
         else:
             await _run_conversation(pipeline, transport)
     finally:
+        if rag_warm_task is not None and not rag_warm_task.done():
+            rag_warm_task.cancel()
         await pipeline.aclose()
         if store is not None:
             await store.aclose()
