@@ -10,6 +10,7 @@ so it is fully unit-testable without models.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -52,9 +53,47 @@ def load_states(domain: DomainConfig) -> list[State]:
 # --------------------------------------------------------------------------- #
 class TurnIntent(StrEnum):
     ANSWER = "answer"
-    QUESTION = "question"
+    QUESTION = "question"          # a substantive domain question -> RAG
+    META = "meta"                 # procedural / small-talk / clarification -> canned reply, no RAG
     DONE = "done"
     UNCLEAR = "unclear"
+
+
+class MetaKind(StrEnum):
+    """The shape of a meta utterance, so we can give it the right canned reply."""
+
+    REPEAT = "repeat"             # "can you repeat?" -> re-read the current line
+    PERMISSION = "permission"     # "can I ask a question?" -> "of course, go ahead"
+    WAIT = "wait"                 # "hold on / one sec" -> "take your time"
+
+
+# Conservative keyword fast-path: unambiguous procedural/small-talk phrases that must NOT
+# trigger retrieval. Kept phrase-anchored (not bare words like "wait"/"what") so a real
+# answer or question is never mislabelled — the classifier's "meta" intent catches the rest.
+_META_RULES: tuple[tuple[MetaKind, re.Pattern[str]], ...] = (
+    (MetaKind.REPEAT, re.compile(
+        r"\b(can|could) you repeat\b|\brepeat (that|the question)\b|\bsay that again\b"
+        r"|\bcome again\b|\bdidn'?t (catch|hear|get) that\b|\bpardon( me)?\b", re.I)),
+    (MetaKind.PERMISSION, re.compile(
+        r"\b(can|could|may) i ask\b[^?]{0,25}\bquestion\b|\bquick question\b"
+        r"|\bask you (a|one|something)\b", re.I)),
+    (MetaKind.WAIT, re.compile(
+        r"\bhold on\b|\bhang on\b|\bone (sec|second|moment)\b"
+        r"|\b(give me|just) a (sec|second|moment)\b", re.I)),
+)
+
+
+def detect_meta(utterance: str) -> MetaKind | None:
+    """Match a clear procedural/small-talk phrase (repeat / permission / hold on), else None.
+
+    A free, deterministic fast-path so common meta utterances skip the classifier LLM *and*
+    retrieval entirely — "can I ask a question?" should be an instant "go ahead", not a
+    knowledge-base search that costs an embed + rerank + LLM read.
+    """
+    for kind, pattern in _META_RULES:
+        if pattern.search(utterance):
+            return kind
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +101,7 @@ class TurnDecision:
     intent: TurnIntent
     answer_value: str = ""
     caller_question: str = ""
+    meta: MetaKind | None = None   # set for TurnIntent.META (keyword fast-path); None from the LLM
 
 
 class TurnClassifier(Protocol):
@@ -71,10 +111,13 @@ class TurnClassifier(Protocol):
 _CLASSIFY_SYSTEM = (
     'You label one caller utterance during a phone job-screening interview. The '
     'interviewer just asked: "{question}". Reply with ONLY a JSON object, nothing else:\n'
-    '{{"intent": "answer|question|done|unclear", "answer_value": "", "caller_question": ""}}\n'
+    '{{"intent": "answer|question|meta|done|unclear", "answer_value": "", "caller_question": ""}}\n'
     "- answer: the caller answered the interviewer's question; put a short normalized "
     "value in answer_value.\n"
-    "- question: the caller asked their own question instead; put it in caller_question.\n"
+    "- question: the caller asked a SUBSTANTIVE question about the role, company, team, "
+    "process, benefits, or policies (it needs the knowledge base); put it in caller_question.\n"
+    "- meta: a procedural or small-talk remark that is NOT a knowledge question — e.g. asking "
+    "permission to ask, asking you to repeat, or saying to hold on.\n"
     "- done: the caller signaled they have no more questions or nothing to add.\n"
     "- unclear: you cannot tell."
 )
@@ -242,17 +285,35 @@ class DialogueManager:
         if self._redact:
             transcript = redact_pii(transcript)
         self._state.add_turn("user", transcript)
+        kind = detect_meta(transcript)
+        if kind is not None:
+            # Clear meta phrase — skip the classifier LLM and retrieval entirely.
+            return transcript, TurnDecision(intent=TurnIntent.META, meta=kind)
         with latency.span("classifier_ms"):
             decision = await self._classifier.classify(current.prompt, transcript)
         return transcript, decision
 
     def _plan(self, current: State, transcript: str, decision: TurnDecision) -> _Reply:
         """Decide the reply (and apply slot/state mutations); deliver it later."""
+        if decision.intent is TurnIntent.META:
+            return self._plan_meta(current, decision)  # canned reply, no retrieval, stay put
         if current.type == "question":
             return self._plan_question(current, transcript, decision)
         if current.type == "grounded_qa":
             return self._plan_grounded_qa(transcript, decision)
         return _Reply(parts=[current.prompt], ended=True)  # close
+
+    def _plan_meta(self, current: State, decision: TurnDecision) -> _Reply:
+        """A procedural/small-talk turn: reply cheaply and stay on the current line (no RAG)."""
+        if decision.meta is MetaKind.REPEAT:
+            text = f"Sure — {current.prompt}"
+        elif decision.meta is MetaKind.WAIT:
+            text = "Take your time."
+        elif decision.meta is MetaKind.PERMISSION:
+            text = "Of course, go ahead."
+        else:  # classifier-detected meta without a specific kind: acknowledge + re-anchor
+            text = f"Of course. {current.prompt}"
+        return _Reply([text], ended=False, intent=TurnIntent.META)
 
     def _plan_question(self, state: State, transcript: str, decision: TurnDecision) -> _Reply:
         if decision.intent is TurnIntent.QUESTION:

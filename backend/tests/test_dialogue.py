@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from src.agent.dialogue import DialogueManager, LLMTurnClassifier, TurnDecision, TurnIntent
+from src.agent.dialogue import (
+    DialogueManager,
+    LLMTurnClassifier,
+    MetaKind,
+    TurnDecision,
+    TurnIntent,
+    detect_meta,
+)
 from src.agent.domain import DomainConfig
 from src.agent.grounding import GroundedAnswer
 from src.agent.state import ConversationState, InMemoryStateStore
@@ -143,6 +150,58 @@ async def test_question_skipped_after_max_unclear_attempts() -> None:
     assert "main tech stack" in second.text
     assert second.ended is False
     assert mgr.state.slots["years_experience"] == ""  # left unanswered
+
+
+def test_detect_meta_matches_phrases_but_not_real_answers_or_questions() -> None:
+    assert detect_meta("Actually, can I ask a question?") is MetaKind.PERMISSION
+    assert detect_meta("sorry, could you repeat the question") is MetaKind.REPEAT
+    assert detect_meta("hold on, one sec") is MetaKind.WAIT
+    # Real answers / questions must NOT be caught — they still need the classifier / RAG.
+    assert detect_meta("I have six years of experience") is None
+    assert detect_meta("wait, is it remote?") is None            # bare "wait" is not meta
+    assert detect_meta("what is the salary range?") is None
+    assert detect_meta("can I ask about the salary?") is None    # substantive -> classifier
+
+
+@pytest.mark.asyncio
+async def test_meta_permission_skips_classifier_and_retrieval() -> None:
+    responder = _responder("company info [x.md]", ["x.md"])
+    mgr = _manager([], responder)          # empty decisions: classify must NOT be called
+    await mgr.start()
+
+    turn = await mgr.handle_turn("Actually, can I ask a question?")
+
+    assert turn.text == "Of course, go ahead."
+    assert turn.ended is False
+    assert responder.questions == []       # no retrieval
+    assert mgr._classifier.seen == []      # classifier LLM skipped (deterministic fast-path)
+    assert mgr.state.slots == {} and mgr.state.state_index == 0   # stayed on the question
+
+
+@pytest.mark.asyncio
+async def test_meta_repeat_rereads_the_current_question() -> None:
+    mgr = _manager([], _responder())
+    await mgr.start()
+
+    turn = await mgr.handle_turn("sorry, can you repeat that?")
+
+    assert turn.text == "Sure — How many years of experience do you have?"
+    assert turn.ended is False
+    assert mgr._classifier.seen == []
+
+
+@pytest.mark.asyncio
+async def test_llm_classified_meta_skips_retrieval() -> None:
+    responder = _responder("info", ["x.md"])
+    # No keyword match -> classifier is consulted and returns meta (no specific kind).
+    mgr = _manager([TurnDecision(TurnIntent.META)], responder)
+    await mgr.start()
+
+    turn = await mgr.handle_turn("hmm, let me think about how to phrase this")
+
+    assert turn.ended is False
+    assert responder.questions == []                     # meta never retrieves
+    assert "How many years" in turn.text                 # generic meta re-anchors to the question
 
 
 @pytest.mark.asyncio
