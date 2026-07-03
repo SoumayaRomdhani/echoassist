@@ -35,8 +35,14 @@ system_prompt: >
   benefits, or policies only from the knowledge base; never invent company-specific
   facts, salaries, or policies.
 
-# Spoken between an answered question and the next one (keeps the flow natural).
-transition_ack: "Thanks."
+# Spoken between an answered question and the next one (keeps the flow natural). A list is
+# rotated for variety so the agent doesn't repeat the same word every turn; a string also works.
+transition_ack:
+  - "Thanks."
+  - "Got it."
+  - "Great, thanks."
+  - "Understood."
+  - "Okay, thanks."
 
 # Ordered interview states (read by agent/dialogue.py). Runs after consent is granted.
 #   type: question     -> ask `prompt`, extract the reply into `slot`

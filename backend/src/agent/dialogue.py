@@ -48,6 +48,15 @@ def load_states(domain: DomainConfig) -> list[State]:
     ]
 
 
+def _load_acks(domain: DomainConfig) -> list[str]:
+    """Transition acknowledgements from the domain YAML (``transition_ack:`` — string or list)."""
+    raw = domain.flow.get("transition_ack")
+    if isinstance(raw, list):
+        return [str(ack).strip() for ack in raw if str(ack).strip()]
+    text = str(raw).strip() if raw else ""
+    return [text] if text else []
+
+
 # --------------------------------------------------------------------------- #
 # Turn classification                                                         #
 # --------------------------------------------------------------------------- #
@@ -194,7 +203,11 @@ class DialogueManager:
         self._classifier = classifier
         self._responder = responder
         self._states = load_states(domain)
-        self._ack = str(domain.flow.get("transition_ack") or "").strip()
+        # Transition acknowledgements, spoken before the next question so the flow isn't
+        # abrupt. A pool (domain YAML `transition_ack:` may be a string or a list) rotated for
+        # variety, so the agent doesn't repeat the same word every turn.
+        self._acks = _load_acks(domain)
+        self._ack_i = 0
         self._state = state
         self._store = store
         self._max_question_retries = max_question_retries
@@ -356,12 +369,21 @@ class DialogueManager:
         self._state.query_history.append(question)
         return _Reply([_Grounded(question)], ended=False, intent=decision.intent)
 
+    def _next_ack(self) -> str:
+        """The next transition acknowledgement, cycling the pool so it isn't always the same."""
+        if not self._acks:
+            return ""
+        ack = self._acks[self._ack_i % len(self._acks)]
+        self._ack_i += 1
+        return ack
+
     def _advance(self, *, prepend_ack: bool) -> _Reply:
         self._state.state_index += 1
         nxt = self._current
         if nxt is None:
             return _Reply([], ended=True)
-        text = f"{self._ack} {nxt.prompt}".strip() if prepend_ack and self._ack else nxt.prompt
+        ack = self._next_ack() if prepend_ack else ""
+        text = f"{ack} {nxt.prompt}".strip() if ack else nxt.prompt
         if nxt.type == "close":
             self._state.state_index = len(self._states)  # close is the last line
             return _Reply([text], ended=True)

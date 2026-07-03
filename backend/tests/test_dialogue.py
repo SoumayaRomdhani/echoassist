@@ -141,6 +141,38 @@ async def test_full_flow_runs_to_close() -> None:
 
 
 @pytest.mark.asyncio
+async def test_transition_acks_rotate_so_it_is_not_always_thanks() -> None:
+    flow = {
+        "transition_ack": ["Thanks.", "Got it.", "Great."],
+        "states": [
+            {"id": "q1", "type": "question", "slot": "a", "prompt": "Q one?"},
+            {"id": "q2", "type": "question", "slot": "b", "prompt": "Q two?"},
+            {"id": "q3", "type": "question", "slot": "c", "prompt": "Q three?"},
+            {"id": "close", "type": "close", "prompt": "Bye."},
+        ],
+    }
+    domain = DomainConfig(
+        name="x", language="en", disclosure="d", greeting="g", system_prompt="s",
+        consent_reprompt="r", consent_decline="x", flow=flow,
+    )
+    mgr = DialogueManager(
+        classifier=FakeClassifier([
+            TurnDecision(TurnIntent.ANSWER, answer_value="1"),
+            TurnDecision(TurnIntent.ANSWER, answer_value="2"),
+        ]),
+        responder=_responder(), domain=domain,
+        state=ConversationState(call_id="c1"), store=InMemoryStateStore(),
+    )
+    await mgr.start()
+
+    t1 = await mgr.handle_turn("one")
+    t2 = await mgr.handle_turn("two")
+
+    assert t1.text == "Thanks. Q two?"
+    assert t2.text == "Got it. Q three?"   # rotated to the next ack, not "Thanks." again
+
+
+@pytest.mark.asyncio
 async def test_question_skipped_after_max_unclear_attempts() -> None:
     decisions = [TurnDecision(TurnIntent.UNCLEAR), TurnDecision(TurnIntent.UNCLEAR)]
     mgr = _manager(decisions, _responder())
