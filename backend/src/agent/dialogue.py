@@ -96,6 +96,12 @@ def detect_meta(utterance: str) -> MetaKind | None:
     return None
 
 
+async def _empty_stream() -> AsyncIterator[str]:
+    """An async iterator that yields nothing (for a turn with no current state)."""
+    for _ in ():
+        yield _
+
+
 @dataclass(frozen=True, slots=True)
 class TurnDecision:
     intent: TurnIntent
@@ -247,24 +253,25 @@ class DialogueManager:
         await self._store.save(self._state)
         return DialogueTurn(text=text, ended=plan.ended, citations=citations, intent=plan.intent)
 
-    async def handle_turn_streaming(self, transcript: str) -> AsyncIterator[str]:
-        """Streaming turn: yield reply text deltas (grounded answers via the LLM stream).
+    async def begin_streaming_turn(self, transcript: str) -> tuple[bool, AsyncIterator[str]]:
+        """Classify + plan the turn eagerly, then return ``(is_rag, reply-text stream)``.
 
-        Same decision/slot logic as :meth:`handle_turn`; the reply is streamed so
-        audio can start at the first sentence. The recorded assistant turn is the
-        spoken (citation-stripped) text. Check :attr:`finished` afterwards for end.
+        Exposing ``is_rag`` *before* the (slow) retrieval lets the live caller decide whether
+        to cover the wait with a filler — it never changes what the caller ultimately hears.
+        Same decision/slot logic as :meth:`handle_turn`; consume the stream, then check
+        :attr:`finished`. The recorded assistant turn is the spoken (citation-stripped) text.
         """
         current = self._current
         if current is None:
-            return
+            return False, _empty_stream()
         transcript, decision = await self._begin_turn(current, transcript)
         with latency.span("router_ms"):
             plan = self._plan(current, transcript, decision)
-        latency.observe(
-            intent=decision.intent.value,
-            is_rag=any(isinstance(p, _Grounded) for p in plan.parts),
-        )
+        is_rag = any(isinstance(part, _Grounded) for part in plan.parts)
+        latency.observe(intent=decision.intent.value, is_rag=is_rag)
+        return is_rag, self._stream_plan(plan)
 
+    async def _stream_plan(self, plan: _Reply) -> AsyncIterator[str]:
         raw = ""
         for part in plan.parts:
             if isinstance(part, _Grounded):
@@ -275,9 +282,14 @@ class DialogueManager:
                 chunk = f"{part} "
                 raw += chunk
                 yield chunk
-
         self._state.add_turn("assistant", strip_citations(raw))
         await self._store.save(self._state)
+
+    async def handle_turn_streaming(self, transcript: str) -> AsyncIterator[str]:
+        """Streaming turn (no filler): classify+plan, then stream the reply deltas."""
+        _is_rag, stream = await self.begin_streaming_turn(transcript)
+        async for delta in stream:
+            yield delta
 
     # --- shared turn logic -------------------------------------------------
     async def _begin_turn(self, current: State, transcript: str) -> tuple[str, TurnDecision]:

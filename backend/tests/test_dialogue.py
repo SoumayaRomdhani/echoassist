@@ -56,6 +56,10 @@ class FakeResponder:
         self.questions.append(question)
         return self._answer
 
+    async def answer_streaming(self, question: str):
+        self.questions.append(question)
+        yield self._answer.text
+
 
 def _manager(decisions, responder, *, state=None):
     state = state or ConversationState(call_id="c1")
@@ -202,6 +206,32 @@ async def test_llm_classified_meta_skips_retrieval() -> None:
     assert turn.ended is False
     assert responder.questions == []                     # meta never retrieves
     assert "How many years" in turn.text                 # generic meta re-anchors to the question
+
+
+@pytest.mark.asyncio
+async def test_begin_streaming_turn_flags_rag_only_for_substantive_questions() -> None:
+    # A caller QUESTION -> grounded -> is_rag True (worth a filler).
+    mgr = _manager([TurnDecision(TurnIntent.QUESTION, caller_question="is it remote?")],
+                   _responder("It is remote."))
+    await mgr.start()
+    is_rag, stream = await mgr.begin_streaming_turn("wait, is it remote?")
+    _ = [d async for d in stream]
+    assert is_rag is True
+
+    # A slot ANSWER -> not RAG (no filler).
+    mgr = _manager([TurnDecision(TurnIntent.ANSWER, answer_value="6")], _responder())
+    await mgr.start()
+    is_rag, stream = await mgr.begin_streaming_turn("six years")
+    _ = [d async for d in stream]
+    assert is_rag is False
+
+    # A meta keyword phrase -> not RAG, classifier skipped.
+    mgr = _manager([], _responder())
+    await mgr.start()
+    is_rag, stream = await mgr.begin_streaming_turn("can I ask a question?")
+    _ = [d async for d in stream]
+    assert is_rag is False
+    assert mgr._classifier.seen == []
 
 
 @pytest.mark.asyncio

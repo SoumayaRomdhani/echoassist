@@ -14,13 +14,25 @@ doctor) does not pull heavy ML dependencies into its import path.
 from __future__ import annotations
 
 import os
+import re
 import warnings
 from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Diverse, professional filler acknowledgements rotated on slow grounded turns (no human
+# mimicry). Override globally with FILLER_PHRASES ("a | b | c") or per domain in the YAML.
+_DEFAULT_FILLER_PHRASES = [
+    "Let me check that.",
+    "One moment while I check.",
+    "I'll look that up.",
+    "Let me verify that.",
+    "Give me one second to check.",
+]
 
 # Quiet a noisy multi-line Hugging Face warning on Windows (no symlink support).
 # Set here because settings is imported before any model library loads.
@@ -110,6 +122,14 @@ class Settings(BaseSettings):
     tts_stream_min_words: int = 3
     tts_stream_max_words: int = 10
     tts_stream_max_delay_ms: int = 400
+    # Perceived-latency filler (professional, pre-synthesized): on a SLOW substantive RAG/tool
+    # turn, if no real audio is ready within FILLER_DELAY_MS, play a short cached acknowledgement
+    # ("Let me check that.") while the real answer keeps preparing in the background. Never used
+    # for slot answers or meta replies. A domain YAML may override the phrase under `filler:`.
+    filler_enabled: bool = True
+    filler_delay_ms: int = 800
+    filler_only_for_rag: bool = True
+    filler_phrases: list[str] = _DEFAULT_FILLER_PHRASES   # rotated for variety
     domain: str = "screening"
 
     # --- STT: faster-whisper ---
@@ -251,6 +271,14 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.3
     llm_max_tokens: int = 512
     log_level: str = "INFO"
+
+    @field_validator("filler_phrases", mode="before")
+    @classmethod
+    def _split_filler_phrases(cls, value: object) -> object:
+        # Accept a friendly delimited env string ("a | b ; c") as well as a real list.
+        if isinstance(value, str):
+            return [p.strip() for p in re.split(r"[|;\n]", value) if p.strip()]
+        return value
 
     @property
     def backend_dir(self) -> Path:

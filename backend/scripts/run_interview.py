@@ -145,7 +145,7 @@ async def main() -> None:
             with latency.record_turn(
                 settings.data_dir, turn_id=turn_id, **latency.config_fields(settings)
             ):
-                caller_text, audio_stream = await pipeline.interview_turn_streaming(
+                caller_text, _is_rag, audio_stream = await pipeline.interview_turn_streaming(
                     stream_wav(path, realtime=realtime)
                 )
                 print(f"\n{bold('CALLER:')} {caller_text}")

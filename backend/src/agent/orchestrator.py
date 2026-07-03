@@ -227,12 +227,15 @@ class VoicePipeline:
         """
         return self._dialogue is not None and self._dialogue.finished
 
-    async def interview_turn_streaming(self, audio) -> tuple[str, AsyncIterator[AudioChunk]]:
-        """Streaming interview turn: returns (caller transcript, agent audio stream).
+    async def interview_turn_streaming(
+        self, audio
+    ) -> tuple[str, bool, AsyncIterator[AudioChunk]]:
+        """Streaming interview turn: returns (caller transcript, is_rag, agent audio stream).
 
-        The agent's audio starts at the first complete sentence; grounded answers
-        stream from the LLM. After consuming the stream, ``dialogue.finished`` tells
-        you whether the interview ended and the recorded reply is in the call state.
+        ``is_rag`` is resolved (classify + plan) before the slow retrieval, so a live caller
+        can cover the wait with a filler on grounded turns only — it never changes what the
+        caller hears. After consuming the stream, ``interview_finished`` tells you whether the
+        interview ended and the recorded reply is in the call state.
         """
         from src.agent.grounding import strip_citations
         from src.agent.streaming import synthesize_streaming
@@ -242,13 +245,13 @@ class VoicePipeline:
             transcript = await self._stt.transcribe(audio)
         latency.event("stt_done")
         latency.observe(transcript_length=len(transcript.text))
-        text_stream = self._dialogue.handle_turn_streaming(transcript.text)
+        is_rag, text_stream = await self._dialogue.begin_streaming_turn(transcript.text)
         # tts timing + the first-audio event are recorded inside synthesize_streaming.
         audio_stream = synthesize_streaming(
             text_stream, self._tts, clean=strip_citations,
             coalesce_sentences=self._stream_coalesce, policy=self._chunk_policy,
         )
-        return transcript.text, audio_stream
+        return transcript.text, is_rag, audio_stream
 
     async def speak(self, text: str) -> AudioChunk:
         """Synthesize agent speech (no conversation-history side effects)."""

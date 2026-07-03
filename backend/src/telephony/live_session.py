@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING
 
 from config.settings import (
@@ -40,6 +41,7 @@ from src.agent.streaming import resolve_chunk_policy
 from src.console import WARN, bold, dim
 from src.observability import latency
 from src.providers.llm.base import LLMProvider
+from src.providers.tts.base import TTSProvider
 from src.providers.types import AudioChunk
 from src.storage.db import init_db, make_sessionmaker
 from src.storage.queries import log_consent
@@ -49,6 +51,90 @@ if TYPE_CHECKING:
     from src.rag.retriever import Retriever
 
 log = logging.getLogger("echoassist.live")
+
+
+class _Filler:
+    """Short, professional, pre-synthesized acknowledgements for slow grounded turns.
+
+    A small pool is synthesized once in the background at session start (off the critical path)
+    and cached as :class:`AudioChunk`\\ s — never a per-turn TTS call. :meth:`next_chunk` cycles
+    through them for variety. Honest, not human mimicry (no "uhm"/breaths).
+    """
+
+    def __init__(self, tts: TTSProvider, phrases: list[str], delay_ms: int) -> None:
+        self._tts = tts
+        self._phrases = phrases
+        self.delay_s = max(0.0, delay_ms / 1000.0)
+        self._chunks: list[AudioChunk] = []
+        self._next = 0
+
+    async def prepare(self) -> None:
+        for phrase in self._phrases:
+            try:
+                self._chunks.append(await self._tts.synthesize(phrase))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — best-effort; a failed phrase is skipped
+                log.warning("filler prep failed for %r (%s)", phrase, exc)
+        if self._chunks:
+            log.info("fillers ready: %d phrase(s)", len(self._chunks))
+        else:
+            log.warning("no fillers synthesized; slow RAG turns won't be covered.")
+
+    @property
+    def ready(self) -> bool:
+        return bool(self._chunks)
+
+    def next_chunk(self) -> AudioChunk:
+        """The next filler audio, cycling through the pool so it isn't always the same phrase."""
+        chunk = self._chunks[self._next % len(self._chunks)]
+        self._next += 1
+        return chunk
+
+
+async def _play_with_filler(
+    transport: Transport,
+    audio_stream: AsyncIterator[AudioChunk],
+    pick_filler: Callable[[], AudioChunk],
+    delay_s: float,
+) -> bool:
+    """Play a grounded answer, covering a slow start with a cached filler; return barge-in.
+
+    The real answer keeps preparing in a background task, so RAG never blocks on the filler.
+    If no real audio chunk is ready within ``delay_s``, one filler (picked by ``pick_filler``,
+    so it rotates) plays; then the real audio plays through the transport's continuous stream
+    (same gap-free path as usual). The answer stream is always drained to the end, so the
+    assistant turn is recorded/persisted exactly as without a filler.
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+    end = object()
+
+    async def _produce() -> None:
+        try:
+            async for chunk in audio_stream:
+                queue.put_nowait(chunk)   # unbounded -> never blocks the RAG producer
+        finally:
+            queue.put_nowait(end)
+
+    producer = asyncio.create_task(_produce())
+    try:
+        try:
+            first = await asyncio.wait_for(queue.get(), timeout=delay_s)
+        except TimeoutError:
+            # Real audio is slow -> honest filler (rotated) while the answer keeps buffering.
+            if await transport.send_interruptible(pick_filler()):
+                return True                       # caller barged during the filler
+            first = await queue.get()
+
+        async def _real_audio() -> AsyncIterator[AudioChunk]:
+            item = first
+            while item is not end:
+                yield item
+                item = await queue.get()
+
+        return await transport.send_stream_interruptible(_real_audio())
+    finally:
+        await producer   # drain the answer fully -> assistant turn recorded + state persisted
 
 
 async def _say(transport: Transport, label: str, text: str, audio: AudioChunk) -> bool:
@@ -134,6 +220,7 @@ async def _run_interview(
     settings: Settings,
     llm: LLMProvider,
     state: ConversationState,
+    filler: _Filler | None = None,
 ) -> None:
     """The full structured screening interview, live, then notes + summary persisted."""
     print(dim("\n--- consent granted — the interview begins (Ctrl-C to hang up) ---"))
@@ -148,14 +235,25 @@ async def _run_interview(
         with latency.record_turn(
             settings.data_dir, turn_id=turn_id, **latency.config_fields(settings)
         ):
-            # Streaming turn (LLM->TTS): the agent starts speaking at the first sentence
-            # instead of after the whole reply. send_stream_interruptible keeps barge-in
-            # working and drains the stream so the turn is recorded even when interrupted.
-            # (Citations are stripped before TTS and not echoed here; the answer is still
-            # grounded — sources live in the persisted notes.)
-            transcript, audio_stream = await pipeline.interview_turn_streaming(transport.listen())
+            # Streaming turn (LLM->TTS): the agent starts speaking at the first chunk instead
+            # of after the whole reply. send_stream_interruptible keeps barge-in working and
+            # drains the stream so the turn is recorded even when interrupted. (Citations are
+            # stripped before TTS; the answer is still grounded — sources live in the notes.)
+            transcript, is_rag, audio_stream = await pipeline.interview_turn_streaming(
+                transport.listen()
+            )
             print(f"\n{bold('CALLER:')} {transcript or '(silence)'}")
-            barged = await transport.send_stream_interruptible(audio_stream)
+            # Cover a slow *grounded* turn with a filler; slot answers / meta go straight through.
+            use_filler = (
+                filler is not None and filler.ready
+                and (is_rag or not settings.filler_only_for_rag)
+            )
+            if use_filler:
+                barged = await _play_with_filler(
+                    transport, audio_stream, filler.next_chunk, filler.delay_s
+                )
+            else:
+                barged = await transport.send_stream_interruptible(audio_stream)
             print(f"{bold('AGENT:')} {_last_agent_line(state)}")
             if barged:
                 print(dim("  [barge-in — the caller talked over the agent]"))
@@ -220,6 +318,16 @@ async def _warm_retriever(retriever: Retriever) -> None:
         log.warning("RAG warm failed (%s); models will load on the first question.", exc)
 
 
+def _filler_phrases(domain: DomainConfig, settings: Settings) -> list[str]:
+    """The filler pool: a domain YAML ``filler:`` (a string or a list) overrides the default."""
+    override = domain.flow.get("filler")
+    if isinstance(override, str):
+        return [override.strip()] if override.strip() else []
+    if isinstance(override, list):
+        return [str(p).strip() for p in override if str(p).strip()]
+    return list(settings.filler_phrases)
+
+
 def _build_dialogue(
     settings: Settings, domain: DomainConfig, llm: LLMProvider, state: ConversationState
 ) -> tuple[DialogueManager, StateStore, Retriever]:
@@ -263,35 +371,48 @@ async def run_live_session(
     domain = load_domain_config(settings.domain, settings.config_dir)
     call_id = uuid.uuid4().hex
     llm = build_llm_with_failover(settings)
+    tts = build_tts(settings)   # shared by the pipeline and the filler
 
     state: ConversationState | None = None
     store: StateStore | None = None
     rag_warm_task: asyncio.Task[None] | None = None
+    filler: _Filler | None = None
+    filler_task: asyncio.Task[None] | None = None
     if interview:
         state = ConversationState(call_id=call_id)
         dialogue, store, retriever = _build_dialogue(settings, domain, llm, state)
         # Warm the RAG models in the background now, so the first candidate question
         # doesn't pay their ~30 s cold load mid-call.
         rag_warm_task = asyncio.create_task(_warm_retriever(retriever))
+        # Pre-synthesize the perceived-latency filler pool in the background (off the critical
+        # path), so a phrase is ready to cover a slow grounded turn. Domain YAML may override it.
+        if settings.filler_enabled:
+            phrases = _filler_phrases(domain, settings)
+            if phrases:
+                filler = _Filler(tts, phrases, settings.filler_delay_ms)
+                filler_task = asyncio.create_task(filler.prepare())
         pipeline = VoicePipeline(
-            build_stt(settings), llm, build_tts(settings), domain, dialogue=dialogue,
+            build_stt(settings), llm, tts, domain, dialogue=dialogue,
             stream_coalesce=settings.tts_local_smoothing,
             chunk_policy=resolve_chunk_policy(settings, domain),
         )
     else:
-        pipeline = VoicePipeline(build_stt(settings), llm, build_tts(settings), domain)
+        pipeline = VoicePipeline(build_stt(settings), llm, tts, domain)
 
     try:
         if not await _greet_and_consent(pipeline, transport, settings, call_id):
             return
         if interview:
             assert state is not None
-            await _run_interview(pipeline, transport, settings=settings, llm=llm, state=state)
+            await _run_interview(
+                pipeline, transport, settings=settings, llm=llm, state=state, filler=filler
+            )
         else:
             await _run_conversation(pipeline, transport)
     finally:
-        if rag_warm_task is not None and not rag_warm_task.done():
-            rag_warm_task.cancel()
+        for task in (rag_warm_task, filler_task):
+            if task is not None and not task.done():
+                task.cancel()
         await pipeline.aclose()
         if store is not None:
             await store.aclose()
