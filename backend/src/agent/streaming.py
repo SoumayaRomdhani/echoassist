@@ -10,8 +10,10 @@ time-to-first-audio; total compute is unchanged. The non-streaming path
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import AsyncIterator, Callable
 
+from src.observability import latency
 from src.providers.tts.base import TTSProvider
 from src.providers.types import AudioChunk
 
@@ -45,6 +47,16 @@ async def synthesize_streaming(
     ``clean`` is applied to each complete sentence before synthesis (e.g. to strip
     ``[source]`` citations from a grounded answer so they are not spoken).
     """
+    got_audio = False
+
+    def _mark_first_audio(started: float) -> None:
+        # First audio chunk of the turn: mark TTFA and the TTS' own time-to-first-audio.
+        nonlocal got_audio
+        if not got_audio:
+            latency.event("first_audio")
+            latency.observe(tts_ttfa_ms=(time.perf_counter() - started) * 1000.0)
+            got_audio = True
+
     buffer = ""
     async for delta in text_stream:
         buffer += delta
@@ -52,9 +64,13 @@ async def synthesize_streaming(
         for sentence in sentences:
             spoken = clean(sentence)
             if spoken:
+                tts_start = time.perf_counter()
                 async for chunk in tts.synthesize_stream(spoken):
+                    _mark_first_audio(tts_start)
                     yield chunk
     remainder = clean(buffer.strip())
     if remainder:
+        tts_start = time.perf_counter()
         async for chunk in tts.synthesize_stream(remainder):
+            _mark_first_audio(tts_start)
             yield chunk

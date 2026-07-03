@@ -11,9 +11,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 
 from src.agent.guardrails import is_grounded, refusal_message
+from src.observability import latency
 from src.providers.llm.base import LLMProvider
 from src.providers.types import Message, Role, ToolSpec
 from src.rag.retriever import Retriever
@@ -105,10 +107,15 @@ class GroundedResponder:
         messages = [Message(Role.SYSTEM, self._system_prompt), Message(Role.USER, question)]
         retrieved: list[ScoredChunk] = []
         tool_calls = 0
+        n_retrieved = 0
 
         for _ in range(self._max_tool_iters):
-            response = await self._llm.chat(messages, tools=[SEARCH_TOOL])
+            with latency.span("llm_total_ms"):
+                response = await self._llm.chat(messages, tools=[SEARCH_TOOL])
             if not response.tool_calls:
+                latency.observe(
+                    retrieved_chunks_count=n_retrieved, confident_chunks_count=len(retrieved)
+                )
                 return self._finalize(response.text, retrieved, tool_calls)
 
             messages.append(Message(Role.ASSISTANT, response.text, tool_calls=response.tool_calls))
@@ -116,6 +123,7 @@ class GroundedResponder:
                 tool_calls += 1
                 query = str(call.arguments.get("query") or question)
                 chunks = await asyncio.to_thread(self._retriever.retrieve, query)
+                n_retrieved += len(chunks)
                 # Grounding gate: drop low-confidence chunks so the model answers
                 # from the KB or refuses — never from weak/irrelevant context.
                 confident = [c for c in chunks if is_grounded(c.score, self._min_confidence)]
@@ -134,7 +142,9 @@ class GroundedResponder:
                 )
 
         # Tool budget exhausted: ask once more without tools to force a final answer.
-        final = await self._llm.chat(messages)
+        with latency.span("llm_total_ms"):
+            final = await self._llm.chat(messages)
+        latency.observe(retrieved_chunks_count=n_retrieved, confident_chunks_count=len(retrieved))
         return self._finalize(final.text, retrieved, tool_calls)
 
     async def answer_streaming(self, question: str):
@@ -146,15 +156,18 @@ class GroundedResponder:
         """
         messages = [Message(Role.SYSTEM, self._system_prompt), Message(Role.USER, question)]
         retrieved: list[ScoredChunk] = []
+        n_retrieved = 0
 
         for _ in range(self._max_tool_iters):
-            response = await self._llm.chat(messages, tools=[SEARCH_TOOL])
+            with latency.span("llm_total_ms"):
+                response = await self._llm.chat(messages, tools=[SEARCH_TOOL])
             if not response.tool_calls:
                 break  # the model is ready to answer
             messages.append(Message(Role.ASSISTANT, response.text, tool_calls=response.tool_calls))
             for call in response.tool_calls:
                 query = str(call.arguments.get("query") or question)
                 chunks = await asyncio.to_thread(self._retriever.retrieve, query)
+                n_retrieved += len(chunks)
                 confident = [c for c in chunks if is_grounded(c.score, self._min_confidence)]
                 retrieved.extend(confident)
                 messages.append(
@@ -162,10 +175,18 @@ class GroundedResponder:
                             tool_call_id=call.id, name=call.name)
                 )
 
+        latency.observe(retrieved_chunks_count=n_retrieved, confident_chunks_count=len(retrieved))
         if not retrieved:  # deterministic refusal — never stream an ungrounded answer
             yield refusal_message()
             return
+        # llm_ttft: the answer LLM's own time-to-first-token (unaffected by downstream
+        # backpressure, since the first token is pulled immediately).
+        answer_start = time.perf_counter()
+        first = True
         async for delta in self._llm.chat_stream(messages):
+            if first:
+                latency.observe(llm_ttft_ms=(time.perf_counter() - answer_start) * 1000.0)
+                first = False
             yield delta
 
     def _finalize(

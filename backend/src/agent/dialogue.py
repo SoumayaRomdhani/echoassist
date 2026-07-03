@@ -20,6 +20,7 @@ from src.agent.grounding import GroundedResponder, strip_citations
 from src.agent.guardrails import redact_pii
 from src.agent.jsonutil import extract_json
 from src.agent.state import ConversationState, StateStore
+from src.observability import latency
 from src.providers.llm.base import LLMProvider
 from src.providers.types import Message, Role
 
@@ -181,7 +182,12 @@ class DialogueManager:
         if current is None:
             return DialogueTurn(text="", ended=True)
         transcript, decision = await self._begin_turn(current, transcript)
-        plan = self._plan(current, transcript, decision)
+        with latency.span("router_ms"):
+            plan = self._plan(current, transcript, decision)
+        latency.observe(
+            intent=decision.intent.value,
+            is_rag=any(isinstance(p, _Grounded) for p in plan.parts),
+        )
 
         pieces: list[str] = []
         citations: list[str] = []
@@ -209,7 +215,12 @@ class DialogueManager:
         if current is None:
             return
         transcript, decision = await self._begin_turn(current, transcript)
-        plan = self._plan(current, transcript, decision)
+        with latency.span("router_ms"):
+            plan = self._plan(current, transcript, decision)
+        latency.observe(
+            intent=decision.intent.value,
+            is_rag=any(isinstance(p, _Grounded) for p in plan.parts),
+        )
 
         raw = ""
         for part in plan.parts:
@@ -231,7 +242,8 @@ class DialogueManager:
         if self._redact:
             transcript = redact_pii(transcript)
         self._state.add_turn("user", transcript)
-        decision = await self._classifier.classify(current.prompt, transcript)
+        with latency.span("classifier_ms"):
+            decision = await self._classifier.classify(current.prompt, transcript)
         return transcript, decision
 
     def _plan(self, current: State, transcript: str, decision: TurnDecision) -> _Reply:

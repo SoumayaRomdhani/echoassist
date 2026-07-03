@@ -14,6 +14,7 @@ import logging
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
+from src.observability import latency
 from src.observability.tracing import span
 from src.rag.embeddings import HybridEmbedder
 from src.rag.reranker import Reranker
@@ -56,9 +57,10 @@ class Retriever:
             return self._retrieve(query)
 
     def _retrieve(self, query: str) -> list[ScoredChunk]:
-        dense, sparse = self._embedder.embed_query(query)
+        with latency.span("rag_embed_ms"):
+            dense, sparse = self._embedder.embed_query(query)
         # Dense and sparse searches are independent — run them concurrently.
-        with ThreadPoolExecutor(max_workers=2) as pool:
+        with latency.span("rag_qdrant_ms"), ThreadPoolExecutor(max_workers=2) as pool:
             dense_future = pool.submit(self._store.search_dense, dense, self._candidates)
             sparse_future = pool.submit(self._store.search_sparse, sparse, self._candidates)
             dense_hits = dense_future.result()
@@ -78,7 +80,8 @@ class Retriever:
         ranked_ids = sorted(fused, key=fused.get, reverse=True)[: self._candidates]
 
         passages = [chunks[cid].text for cid in ranked_ids]
-        rerank_scores = self._reranker.rerank(query, passages)
+        with latency.span("rag_rerank_ms"):
+            rerank_scores = self._reranker.rerank(query, passages)
 
         scored = [
             ScoredChunk(

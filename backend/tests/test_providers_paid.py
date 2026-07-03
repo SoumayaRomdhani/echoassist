@@ -1,4 +1,4 @@
-"""Paid drop-in providers (Sprint 8 Path B): Deepgram STT, Cartesia/ElevenLabs TTS.
+"""Paid drop-in providers (Sprint 8 Path B): Deepgram STT, Cartesia/ElevenLabs TTS, Voyage rerank.
 
 These run with **no API key and no network**. Three layers of coverage:
   1. missing-key -> ProviderConfigError (the key check precedes the lazy SDK import,
@@ -353,3 +353,67 @@ async def test_elevenlabs_streams_raw_pcm(monkeypatch) -> None:
     voice_id, kwargs = client._calls[0]
     assert voice_id == "voice-1"
     assert kwargs["output_format"] == "pcm_24000"  # raw PCM16 at our wire rate
+
+
+# --------------------------------------------------------------------------- #
+# Voyage reranker (RAG paid drop-in)                                          #
+# --------------------------------------------------------------------------- #
+def test_voyage_reranker_missing_key_raises_config_error() -> None:
+    from src.rag.reranker import VoyageReranker
+
+    with pytest.raises(ProviderConfigError):
+        VoyageReranker(api_key=None)
+
+
+def test_voyage_relevance_to_logit_round_trips_through_the_grounding_gate() -> None:
+    # The gate applies sigmoid (guardrails.confidence); the reranker returns the inverse,
+    # so confidence(score) must recover Voyage's original 0..1 relevance.
+    from src.agent.guardrails import confidence
+    from src.rag.reranker import _relevance_to_logit
+
+    for relevance in (0.02, 0.3, 0.9):
+        assert confidence(_relevance_to_logit(relevance)) == pytest.approx(relevance, abs=1e-6)
+
+
+def _install_fake_voyage(monkeypatch, results: list[SimpleNamespace]):
+    """Inject a fake ``voyageai`` module (the SDK isn't installed) and capture the call."""
+    import sys
+
+    captured: dict = {}
+
+    def rerank(query, documents, *, model, top_k):
+        captured.update(query=query, documents=list(documents), model=model, top_k=top_k)
+        return SimpleNamespace(results=results)
+
+    client = SimpleNamespace(rerank=rerank)
+    monkeypatch.setitem(sys.modules, "voyageai", SimpleNamespace(Client=lambda **_kw: client))
+    return captured
+
+
+def test_voyage_reranker_maps_scores_back_to_input_order(monkeypatch) -> None:
+    from src.rag.reranker import VoyageReranker, _relevance_to_logit
+
+    # Voyage may return results reordered; each carries an index into the input + a 0..1 score.
+    results = [
+        SimpleNamespace(index=2, relevance_score=0.9),
+        SimpleNamespace(index=0, relevance_score=0.4),
+        SimpleNamespace(index=1, relevance_score=0.02),
+    ]
+    captured = _install_fake_voyage(monkeypatch, results)
+
+    scores = VoyageReranker(api_key="x", model="rerank-2.5").rerank("q", ["p0", "p1", "p2"])
+
+    # Scores are aligned to the INPUT order and are the logit of each passage's relevance.
+    assert scores[0] == pytest.approx(_relevance_to_logit(0.4))
+    assert scores[1] == pytest.approx(_relevance_to_logit(0.02))
+    assert scores[2] == pytest.approx(_relevance_to_logit(0.9))
+    assert scores[2] > scores[0] > scores[1]                       # highest relevance ranks first
+    assert captured["documents"] == ["p0", "p1", "p2"] and captured["model"] == "rerank-2.5"
+
+
+def test_voyage_reranker_blank_passages_makes_no_call(monkeypatch) -> None:
+    from src.rag.reranker import VoyageReranker
+
+    captured = _install_fake_voyage(monkeypatch, [])
+    assert VoyageReranker(api_key="x").rerank("q", []) == []
+    assert captured == {}  # short-circuits before hitting the API

@@ -41,19 +41,24 @@ from src.audio.io import stream_wav
 from src.audio.playback import play
 from src.console import FAIL, bold, dim, init_console
 from src.log import setup_logging
+from src.observability import latency
 from src.providers.errors import ProviderError
 from src.runtime import use_selector_event_loop
 from src.storage.db import init_db, make_sessionmaker
+from src.telephony.live_session import _warm_retriever
 
 log = logging.getLogger("echoassist.interview")
 
-# Caller turns, in order: a mid-question detour (RAG), then the five answers, then "done".
+# Caller turns, in order: four answers, a mid-question detour (RAG) during the salary
+# question, then salary + "done". The detour sits late on purpose so the background RAG
+# warm (see run_live_session) has time to finish before the only turn that needs it —
+# letting you observe the cold-load moving to startup without a microphone.
 _DEFAULT_ANSWERS = [
-    "interview_question.wav",
     "interview_experience.wav",
     "interview_stack.wav",
     "interview_availability.wav",
     "interview_remote.wav",
+    "interview_question.wav",
     "interview_salary.wav",
     "interview_done.wav",
 ]
@@ -88,6 +93,10 @@ async def main() -> None:
     domain = load_domain_config(settings.domain, settings.config_dir)
     llm = build_llm(settings)
     retriever = build_retriever(settings)
+    # Warm the RAG models in the background at startup (same fix as the live path), so the
+    # candidate-question turn doesn't pay their cold load. Watch: with realtime pacing the
+    # "Loading FastEmbed…" lines appear now, not on the RAG turn.
+    rag_warm_task = asyncio.create_task(_warm_retriever(retriever))
     store = build_state_store(settings)
     state = ConversationState(call_id=uuid.uuid4().hex)
     dialogue = DialogueManager(
@@ -125,18 +134,23 @@ async def main() -> None:
         question_text, question_audio = await pipeline.begin_interview()
         await _emit("AGENT (question):", question_text, question_audio, play_audio=play_audio)
 
-        for path in answer_paths:
+        for turn_id, path in enumerate(answer_paths, start=1):
             # Streaming turn: audio starts at the first sentence (grounded answers
-            # stream from the LLM), instead of waiting for the whole reply.
-            caller_text, audio_stream = await pipeline.interview_turn_streaming(
-                stream_wav(path, realtime=realtime)
-            )
-            print(f"\n{bold('CALLER:')} {caller_text}")
-            async for chunk in audio_stream:  # consume as it streams
-                if play_audio:
-                    await play(chunk)
-            reply_text = state.transcript[-1]["text"] if state.transcript else ""
-            print(f"{bold('AGENT:')} {reply_text}")
+            # stream from the LLM), instead of waiting for the whole reply. The whole
+            # turn (through consuming the audio stream) runs inside record_turn so the
+            # deep pipeline spans land on this turn (no-op unless LATENCY_LOGGING=true).
+            with latency.record_turn(
+                settings.data_dir, turn_id=turn_id, **latency.config_fields(settings)
+            ):
+                caller_text, audio_stream = await pipeline.interview_turn_streaming(
+                    stream_wav(path, realtime=realtime)
+                )
+                print(f"\n{bold('CALLER:')} {caller_text}")
+                async for chunk in audio_stream:  # consume as it streams
+                    if play_audio:
+                        await play(chunk)
+                reply_text = state.transcript[-1]["text"] if state.transcript else ""
+                print(f"{bold('AGENT:')} {reply_text}")
             if dialogue.finished:
                 break
 
@@ -166,6 +180,8 @@ async def main() -> None:
         print(dim(f"\npersisted to Postgres: campaign='{settings.default_campaign}' "
                   f"call db id={final.call.id} (status={final.call.status})"))
     finally:
+        if not rag_warm_task.done():
+            rag_warm_task.cancel()
         await pipeline.aclose()
         await store.aclose()
 

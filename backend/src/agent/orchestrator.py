@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from src.agent.consent import ConsentDecision, classify_consent
 from src.agent.dialogue import DialogueManager
 from src.agent.domain import DomainConfig
+from src.observability import latency
 from src.providers.llm.base import LLMProvider
 from src.providers.stt.base import STTProvider
 from src.providers.tts.base import TTSProvider
@@ -195,9 +196,18 @@ class VoicePipeline:
     async def interview_turn(self, audio) -> InterviewTurn:
         """Non-streaming interview turn: transcribe -> dialogue decision -> speak (fallback)."""
         self._require_interview_ready()
-        transcript = await self._stt.transcribe(audio)
+        with latency.span("stt_ms"):
+            transcript = await self._stt.transcribe(audio)
+        latency.event("stt_done")
+        latency.observe(transcript_length=len(transcript.text))
         turn = await self._dialogue.handle_turn(transcript.text)
+        tts_start = time.perf_counter()
         audio_out = await self.speak(turn.text)
+        # Non-streaming: the whole reply is synthesized before playback, so first-audio
+        # and total are the same instant.
+        tts_ms = (time.perf_counter() - tts_start) * 1000
+        latency.observe(tts_total_ms=tts_ms, tts_ttfa_ms=tts_ms)
+        latency.event("first_audio")
         return InterviewTurn(transcript.text, turn.text, audio_out, turn.ended, turn.citations)
 
     async def interview_turn_streaming(self, audio) -> tuple[str, AsyncIterator[AudioChunk]]:
@@ -211,8 +221,12 @@ class VoicePipeline:
         from src.agent.streaming import synthesize_streaming
 
         self._require_interview_ready()
-        transcript = await self._stt.transcribe(audio)
+        with latency.span("stt_ms"):
+            transcript = await self._stt.transcribe(audio)
+        latency.event("stt_done")
+        latency.observe(transcript_length=len(transcript.text))
         text_stream = self._dialogue.handle_turn_streaming(transcript.text)
+        # tts timing + the first-audio event are recorded inside synthesize_streaming.
         audio_stream = synthesize_streaming(text_stream, self._tts, clean=strip_citations)
         return transcript.text, audio_stream
 

@@ -37,6 +37,7 @@ from src.agent.notes import load_notes_schema
 from src.agent.orchestrator import ConsentTurn, VoicePipeline
 from src.agent.state import ConversationState, StateStore
 from src.console import WARN, bold, dim
+from src.observability import latency
 from src.providers.llm.base import LLMProvider
 from src.providers.types import AudioChunk
 from src.storage.db import init_db, make_sessionmaker
@@ -138,14 +139,20 @@ async def _run_interview(
     question_text, question_audio = await pipeline.begin_interview()
     await _say(transport, "AGENT:", question_text, question_audio)
 
+    turn_id = 0
     while True:
+        turn_id += 1
         print(dim("\n[listening…]"))
         # Non-streaming turn so each agent line is one chunk and barge-in composes.
-        turn = await pipeline.interview_turn(transport.listen())
-        print(f"\n{bold('CALLER:')} {turn.transcript or '(silence)'}")
-        await _say(transport, "AGENT:", turn.reply, turn.audio)
-        if turn.citations:
-            print(dim(f"  sources: {', '.join(turn.citations)}"))
+        # record_turn is a no-op unless LATENCY_LOGGING=true (adds nothing otherwise).
+        with latency.record_turn(
+            settings.data_dir, turn_id=turn_id, **latency.config_fields(settings)
+        ):
+            turn = await pipeline.interview_turn(transport.listen())
+            print(f"\n{bold('CALLER:')} {turn.transcript or '(silence)'}")
+            await _say(transport, "AGENT:", turn.reply, turn.audio)
+            if turn.citations:
+                print(dim(f"  sources: {', '.join(turn.citations)}"))
         if turn.ended:
             break
 

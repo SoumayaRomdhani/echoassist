@@ -73,6 +73,7 @@ class EmbeddingsProviderName(StrEnum):
 class RerankerProviderName(StrEnum):
     fastembed = "fastembed"
     bge = "bge"
+    voyage = "voyage"
     none = "none"
 
 
@@ -163,6 +164,10 @@ class Settings(BaseSettings):
     fastembed_dense_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     fastembed_sparse_model: str = "Qdrant/bm25"
     fastembed_rerank_model: str = "BAAI/bge-reranker-base"
+    # Reranker: Voyage (paid drop-in) — offloads the CPU-heavy rerank to the cloud, the slow
+    # step of a grounded turn on a small box. Set RERANKER_PROVIDER=voyage + VOYAGE_API_KEY.
+    voyage_api_key: str | None = None
+    voyage_rerank_model: str = "rerank-2.5"    # or rerank-2.5-lite | rerank-2 (all multilingual)
     qdrant_url: str = "http://localhost:6333"
     rag_top_k: int = 6          # chunks returned after rerank
     rag_candidates: int = 20    # candidates per modality before fusion/rerank
@@ -396,6 +401,10 @@ def build_reranker(settings: Settings | None = None) -> Reranker:
         from src.rag.reranker import FastEmbedReranker
 
         return FastEmbedReranker(model=settings.fastembed_rerank_model)
+    if settings.reranker_provider is RerankerProviderName.voyage:
+        from src.rag.reranker import VoyageReranker
+
+        return VoyageReranker(api_key=settings.voyage_api_key, model=settings.voyage_rerank_model)
     if settings.reranker_provider is RerankerProviderName.none:
         from src.rag.reranker import NoOpReranker
 
