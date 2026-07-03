@@ -61,5 +61,25 @@ class Transport(ABC):
         async for chunk in audio:
             await self.send(chunk)
 
+    async def send_stream_interruptible(self, audio: AsyncIterator[AudioChunk]) -> bool:
+        """Play a stream of agent audio chunk-by-chunk, letting the caller barge in.
+
+        Each chunk is played via :meth:`send_interruptible`, so audio starts at the first
+        chunk (low time-to-first-audio) instead of after the whole reply is synthesized —
+        this is how LLM->TTS streaming reaches the live path. The per-chunk barge-in of a
+        duplex transport composes for free; a non-duplex transport just plays every chunk.
+
+        On a barge-in, playback stops at once but the stream is still **drained to
+        exhaustion**: its producer (the dialogue's streaming turn) records the spoken turn
+        and persists state only once fully consumed, so abandoning it early would drop that
+        turn's slot/advance. Returns ``True`` if the caller interrupted.
+        """
+        barged = False
+        async for chunk in audio:
+            if barged:
+                continue  # drain remaining audio so the producer finishes its bookkeeping
+            barged = await self.send_interruptible(chunk)
+        return barged
+
     async def aclose(self) -> None:  # noqa: B027 — optional lifecycle hook, default no-op
         """Release devices / connections. Override if needed."""

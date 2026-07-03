@@ -111,7 +111,8 @@ async def main() -> None:
         redact=settings.redact_pii,
     )
     pipeline = VoicePipeline(
-        build_stt(settings), llm, build_tts(settings), domain, dialogue=dialogue
+        build_stt(settings), llm, build_tts(settings), domain, dialogue=dialogue,
+        stream_coalesce=settings.tts_local_smoothing,
     )
 
     play_audio = not args.no_play

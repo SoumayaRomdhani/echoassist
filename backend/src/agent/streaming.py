@@ -15,7 +15,7 @@ from collections.abc import AsyncIterator, Callable
 
 from src.observability import latency
 from src.providers.tts.base import TTSProvider
-from src.providers.types import AudioChunk
+from src.providers.types import AudioChunk, AudioFormat
 
 _SENTENCE_END = re.compile(r"[.!?](\s+|$)")
 
@@ -41,21 +41,49 @@ async def synthesize_streaming(
     tts: TTSProvider,
     *,
     clean: Callable[[str], str] = _identity,
+    coalesce_sentences: bool = False,
 ) -> AsyncIterator[AudioChunk]:
-    """Synthesize each sentence of a text stream as soon as it completes.
+    """True LLM->TTS streaming: yield each TTS audio chunk **as soon as the provider
+    returns it** (lowest time-to-first-audio). Text is still chunked by sentence.
 
     ``clean`` is applied to each complete sentence before synthesis (e.g. to strip
-    ``[source]`` citations from a grounded answer so they are not spoken).
-    """
-    got_audio = False
+    ``[source]`` citations so they are not spoken). ``coalesce_sentences=True`` buffers a
+    sentence's audio into one chunk before yielding — a *local-playback smoothing* option
+    that trades TTFA for gap-free playback on the ``sd.play`` mic transport; **off by
+    default** so we stream truly.
 
-    def _mark_first_audio(started: float) -> None:
-        # First audio chunk of the turn: mark TTFA and the TTS' own time-to-first-audio.
-        nonlocal got_audio
-        if not got_audio:
-            latency.event("first_audio")
-            latency.observe(tts_ttfa_ms=(time.perf_counter() - started) * 1000.0)
-            got_audio = True
+    Records per-turn metrics (no-op unless LATENCY_LOGGING): ``tts_first_byte_ms`` (first
+    sentence), ``sentence_tts_total_ms`` (first sentence full synth), ``tts_chunks_count``,
+    and the ``first_audio`` event that drives ``ttfa_ms``.
+    """
+    got_first = False
+    chunk_count = 0
+    first_sentence_recorded = False
+
+    async def _speak(spoken: str) -> AsyncIterator[AudioChunk]:
+        nonlocal got_first, chunk_count, first_sentence_recorded
+        started = time.perf_counter()
+        coalesced = bytearray()
+        fmt: AudioFormat | None = None
+        sentence_first = True
+        async for chunk in tts.synthesize_stream(spoken):
+            chunk_count += 1
+            if sentence_first:
+                sentence_first = False
+                if not got_first:  # the turn's first audio -> TTFA + TTS first-byte
+                    latency.event("first_audio")
+                    latency.observe(tts_first_byte_ms=(time.perf_counter() - started) * 1000.0)
+                    got_first = True
+            if coalesce_sentences:
+                coalesced.extend(chunk.data)
+                fmt = chunk.fmt
+            else:
+                yield chunk  # emit immediately — do NOT wait for the whole sentence
+        if coalesce_sentences and coalesced and fmt is not None:
+            yield AudioChunk(bytes(coalesced), fmt)
+        if not first_sentence_recorded:
+            latency.observe(sentence_tts_total_ms=(time.perf_counter() - started) * 1000.0)
+            first_sentence_recorded = True
 
     buffer = ""
     async for delta in text_stream:
@@ -64,13 +92,10 @@ async def synthesize_streaming(
         for sentence in sentences:
             spoken = clean(sentence)
             if spoken:
-                tts_start = time.perf_counter()
-                async for chunk in tts.synthesize_stream(spoken):
-                    _mark_first_audio(tts_start)
+                async for chunk in _speak(spoken):
                     yield chunk
     remainder = clean(buffer.strip())
     if remainder:
-        tts_start = time.perf_counter()
-        async for chunk in tts.synthesize_stream(remainder):
-            _mark_first_audio(tts_start)
+        async for chunk in _speak(remainder):
             yield chunk
+    latency.observe(tts_chunks_count=chunk_count)

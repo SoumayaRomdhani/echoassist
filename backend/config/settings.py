@@ -98,6 +98,10 @@ class Settings(BaseSettings):
     stt_provider: STTProviderName = STTProviderName.whisper_local
     llm_provider: LLMProviderName = LLMProviderName.ollama
     tts_provider: TTSProviderName = TTSProviderName.kokoro
+    # Coalesce each sentence's TTS audio into one chunk before playback: gap-free on the
+    # local sd.play mic transport, but raises TTFA (waits for the whole sentence). Off by
+    # default = true streaming (yield the first audio chunk as soon as TTS returns it).
+    tts_local_smoothing: bool = False
     domain: str = "screening"
 
     # --- STT: faster-whisper ---

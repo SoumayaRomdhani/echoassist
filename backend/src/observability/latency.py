@@ -74,6 +74,8 @@ class TurnRecorder:
         self.data["total_turn_ms"] = self._elapsed_ms()
         stt_done = self._events.get("stt_done")
         first_audio = self._events.get("first_audio")
+        if first_audio is not None:
+            self.data["first_audio_event_ms"] = first_audio   # turn-relative, ms
         if stt_done is not None and first_audio is not None:
             # TTFA: from the transcript being ready to the agent's first audio chunk.
             self.data["ttfa_ms"] = first_audio - stt_done
@@ -116,12 +118,19 @@ def observe(**fields: object) -> None:
 
 
 def config_fields(settings: Settings) -> dict:
-    """The run's config + provider names, embedded in every turn's JSON for comparison."""
+    """The run's config + provider names/models, embedded in every turn's JSON for comparison."""
+    tts_model = {
+        "deepgram": getattr(settings, "deepgram_tts_model", ""),
+        "cartesia": getattr(settings, "cartesia_model", ""),
+        "elevenlabs": getattr(settings, "elevenlabs_model", ""),
+        "kokoro": getattr(settings, "kokoro_voice", ""),
+    }.get(settings.tts_provider.value, "")
     return {
         "domain": settings.domain,
         "stt_provider": settings.stt_provider.value,
         "llm_provider": settings.llm_provider.value,
         "tts_provider": settings.tts_provider.value,
+        "tts_model": tts_model,
         "embeddings_provider": settings.embeddings_provider.value,
         "reranker_provider": settings.reranker_provider.value,
         "rag_candidates": settings.rag_candidates,
@@ -176,11 +185,15 @@ def _log_summary(d: dict) -> None:
         return f"{value:.0f}" if isinstance(value, (int, float)) else "-"
 
     log.info(
-        "latency turn=%s intent=%s rag=%s | ttfa=%sms total=%sms | stt=%s classify=%s "
-        "rag=%s(embed=%s qdrant=%s rerank=%s) llm=%s(ttft=%s) tts=%s(ttfa=%s) | chunks=%s/%s conf",
+        "latency turn=%s intent=%s rag=%s tts=%s/%s | ttfa=%sms total=%sms | stt=%s classify=%s "
+        "rag=%s(embed=%s qdrant=%s rerank=%s) llm=%s(ttft=%s) | "
+        "tts_first_byte=%s sent_total=%s chunks=%s first_audio_at=%s | retrieved=%s confident=%s",
         d.get("turn_id"), d.get("intent"), d.get("is_rag"),
+        d.get("tts_provider"), d.get("tts_model"),
         num("ttfa_ms"), num("total_turn_ms"), num("stt_ms"), num("classifier_ms"),
         num("rag_total_ms"), num("rag_embed_ms"), num("rag_qdrant_ms"), num("rag_rerank_ms"),
-        num("llm_total_ms"), num("llm_ttft_ms"), num("tts_total_ms"), num("tts_ttfa_ms"),
+        num("llm_total_ms"), num("llm_ttft_ms"),
+        num("tts_first_byte_ms"), num("sentence_tts_total_ms"), d.get("tts_chunks_count", "-"),
+        num("first_audio_event_ms"),
         d.get("retrieved_chunks_count", "-"), d.get("confident_chunks_count", "-"),
     )

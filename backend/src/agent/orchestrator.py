@@ -97,6 +97,7 @@ class VoicePipeline:
         dialogue: DialogueManager | None = None,
         max_history_messages: int = 20,
         max_consent_attempts: int = 2,
+        stream_coalesce: bool = False,
     ) -> None:
         self._stt = stt
         self._llm = llm
@@ -105,6 +106,7 @@ class VoicePipeline:
         self._dialogue = dialogue
         self._max_history = max_history_messages
         self._max_consent_attempts = max_consent_attempts
+        self._stream_coalesce = stream_coalesce  # local-playback smoothing (off = true streaming)
         self._consent_attempts = 0
         self._consent_granted = False
         self._history: list[Message] = [Message(Role.SYSTEM, domain.system_prompt)]
@@ -203,12 +205,21 @@ class VoicePipeline:
         turn = await self._dialogue.handle_turn(transcript.text)
         tts_start = time.perf_counter()
         audio_out = await self.speak(turn.text)
-        # Non-streaming: the whole reply is synthesized before playback, so first-audio
-        # and total are the same instant.
+        # Non-streaming: the whole reply is synthesized before playback, so first-byte,
+        # sentence total, and total are the same instant.
         tts_ms = (time.perf_counter() - tts_start) * 1000
-        latency.observe(tts_total_ms=tts_ms, tts_ttfa_ms=tts_ms)
+        latency.observe(tts_total_ms=tts_ms, tts_first_byte_ms=tts_ms, sentence_tts_total_ms=tts_ms)
         latency.event("first_audio")
         return InterviewTurn(transcript.text, turn.text, audio_out, turn.ended, turn.citations)
+
+    @property
+    def interview_finished(self) -> bool:
+        """Whether the interview reached its close.
+
+        Meaningful after an :meth:`interview_turn_streaming` audio stream is fully
+        consumed — the streaming turn advances the dialogue as the stream is drained.
+        """
+        return self._dialogue is not None and self._dialogue.finished
 
     async def interview_turn_streaming(self, audio) -> tuple[str, AsyncIterator[AudioChunk]]:
         """Streaming interview turn: returns (caller transcript, agent audio stream).
@@ -227,7 +238,10 @@ class VoicePipeline:
         latency.observe(transcript_length=len(transcript.text))
         text_stream = self._dialogue.handle_turn_streaming(transcript.text)
         # tts timing + the first-audio event are recorded inside synthesize_streaming.
-        audio_stream = synthesize_streaming(text_stream, self._tts, clean=strip_citations)
+        audio_stream = synthesize_streaming(
+            text_stream, self._tts, clean=strip_citations,
+            coalesce_sentences=self._stream_coalesce,
+        )
         return transcript.text, audio_stream
 
     async def speak(self, text: str) -> AudioChunk:

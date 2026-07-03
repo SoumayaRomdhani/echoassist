@@ -143,20 +143,33 @@ async def _run_interview(
     while True:
         turn_id += 1
         print(dim("\n[listening…]"))
-        # Non-streaming turn so each agent line is one chunk and barge-in composes.
         # record_turn is a no-op unless LATENCY_LOGGING=true (adds nothing otherwise).
         with latency.record_turn(
             settings.data_dir, turn_id=turn_id, **latency.config_fields(settings)
         ):
-            turn = await pipeline.interview_turn(transport.listen())
-            print(f"\n{bold('CALLER:')} {turn.transcript or '(silence)'}")
-            await _say(transport, "AGENT:", turn.reply, turn.audio)
-            if turn.citations:
-                print(dim(f"  sources: {', '.join(turn.citations)}"))
-        if turn.ended:
+            # Streaming turn (LLM->TTS): the agent starts speaking at the first sentence
+            # instead of after the whole reply. send_stream_interruptible keeps barge-in
+            # working and drains the stream so the turn is recorded even when interrupted.
+            # (Citations are stripped before TTS and not echoed here; the answer is still
+            # grounded — sources live in the persisted notes.)
+            transcript, audio_stream = await pipeline.interview_turn_streaming(transport.listen())
+            print(f"\n{bold('CALLER:')} {transcript or '(silence)'}")
+            barged = await transport.send_stream_interruptible(audio_stream)
+            print(f"{bold('AGENT:')} {_last_agent_line(state)}")
+            if barged:
+                print(dim("  [barge-in — the caller talked over the agent]"))
+        if pipeline.interview_finished:
             break
 
     await _finalize(settings, llm, state)
+
+
+def _last_agent_line(state: ConversationState) -> str:
+    """The most recent assistant line recorded on the call state (for the console log)."""
+    for turn in reversed(state.transcript):
+        if turn["role"] == "assistant":
+            return turn["text"]
+    return ""
 
 
 async def _finalize(settings: Settings, llm: LLMProvider, state: ConversationState) -> None:
@@ -260,7 +273,8 @@ async def run_live_session(
         # doesn't pay their ~30 s cold load mid-call.
         rag_warm_task = asyncio.create_task(_warm_retriever(retriever))
         pipeline = VoicePipeline(
-            build_stt(settings), llm, build_tts(settings), domain, dialogue=dialogue
+            build_stt(settings), llm, build_tts(settings), domain, dialogue=dialogue,
+            stream_coalesce=settings.tts_local_smoothing,
         )
     else:
         pipeline = VoicePipeline(build_stt(settings), llm, build_tts(settings), domain)

@@ -25,6 +25,7 @@ requires an audio backend.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections import deque
 from collections.abc import AsyncIterator
@@ -156,6 +157,61 @@ class LocalAudioTransport(Transport):
         finally:
             await waiter
         return barged
+
+    async def send_stream_interruptible(self, audio: AsyncIterator[AudioChunk]) -> bool:
+        """Play a stream of agent audio through ONE continuous output stream.
+
+        The base default plays one ``sd.play`` per chunk — catastrophic when a cloud TTS
+        emits 100+ tiny chunks per reply (each ``sd.play``/``sd.wait`` has fixed overhead,
+        so a 5 s reply can take ~50 s and it throttles the TTS). Here every chunk is written
+        into a single persistent :class:`sounddevice.OutputStream`, so playback is gap-free
+        and real-time and never gates synthesis. Barge-in is checked between chunk writes.
+
+        Headphones required (no echo cancellation), same as :meth:`send_interruptible`.
+        """
+        import sounddevice as sd
+
+        if self._queue is None:
+            raise RuntimeError("start() must be called before send_stream_interruptible()")
+        self._drain()
+        monitor = Endpointer(self._barge_cfg)
+        monitor.reset()
+        stream: sd.OutputStream | None = None
+        barged = False
+        try:
+            async for chunk in audio:
+                if barged or not chunk.data:
+                    continue  # drain remaining audio so the producer records the turn
+                if stream is None:
+                    stream = sd.OutputStream(
+                        samplerate=chunk.fmt.sample_rate,
+                        channels=chunk.fmt.channels,
+                        dtype="float32",
+                    )
+                    stream.start()
+                # Blocking write (waits only when the device buffer is full = real-time);
+                # offload so the event loop stays free for the mic callback. Shape as
+                # (frames, channels) — what OutputStream.write expects.
+                samples = chunk_to_float(chunk).reshape(-1, chunk.fmt.channels)
+                await asyncio.to_thread(stream.write, samples)
+                if self._barge_in_pending(monitor):
+                    barged = True
+                    stream.abort()
+        finally:
+            if stream is not None:
+                with contextlib.suppress(Exception):
+                    stream.stop()
+                    stream.close()
+        return barged
+
+    def _barge_in_pending(self, monitor: Endpointer) -> bool:
+        """Feed mic frames captured during playback to the barge monitor; True on onset."""
+        assert self._queue is not None
+        while not self._queue.empty():
+            monitor.update(self._queue.get_nowait())
+            if monitor.started:
+                return True
+        return False
 
     def _drain(self) -> None:
         # Discard frames captured between turns (e.g. the agent's own audio leaking

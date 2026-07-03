@@ -26,6 +26,18 @@ class RecordingTTS(TTSProvider):
         yield AudioChunk(data=text.encode("utf-8"), fmt=self.output_format)
 
 
+class ChunkyTTS(TTSProvider):
+    """Streams one audio chunk per character — like a cloud TTS emitting many chunks."""
+
+    @property
+    def output_format(self) -> AudioFormat:
+        return AudioFormat(sample_rate=24000)
+
+    async def synthesize_stream(self, text: str) -> AsyncIterator[AudioChunk]:
+        for ch in text:
+            yield AudioChunk(data=ch.encode("utf-8"), fmt=self.output_format)
+
+
 def test_split_complete_sentences() -> None:
     assert split_complete_sentences("Hello world. How are you?") == (
         ["Hello world.", "How are you?"], "",
@@ -65,3 +77,29 @@ async def test_first_audio_is_ready_before_input_is_fully_consumed() -> None:
     async for _ in agen:  # drain the rest
         pass
     assert pulled == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_true_streaming_yields_each_tts_chunk_immediately() -> None:
+    # Default: a sentence that streams N audio chunks is forwarded as N chunks (low TTFA).
+    async def stream() -> AsyncIterator[str]:
+        yield "Hi there."
+
+    chunks = [c async for c in synthesize_streaming(stream(), ChunkyTTS())]
+
+    assert len(chunks) == len("Hi there.")                 # not buffered into one
+    assert b"".join(c.data for c in chunks) == b"Hi there."
+
+
+@pytest.mark.asyncio
+async def test_coalesce_flag_merges_a_sentence_into_one_chunk() -> None:
+    # Opt-in local-playback smoothing: the sentence's audio is buffered into one chunk.
+    async def stream() -> AsyncIterator[str]:
+        yield "Hi there."
+
+    chunks = [
+        c async for c in synthesize_streaming(stream(), ChunkyTTS(), coalesce_sentences=True)
+    ]
+
+    assert len(chunks) == 1
+    assert chunks[0].data == b"Hi there."

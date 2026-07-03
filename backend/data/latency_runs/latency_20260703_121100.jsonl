@@ -1,0 +1,1 @@
+{"turn_id": 1, "domain": "screening", "stt_provider": "deepgram", "llm_provider": "groq", "tts_provider": "deepgram", "tts_model": "aura-2-thalia-en", "embeddings_provider": "fastembed", "reranker_provider": "voyage", "rag_candidates": 20, "rag_top_k": 6, "grounding_min_confidence": 0.1, "stt_ms": 26040.3, "total_turn_ms": 26041.5}
