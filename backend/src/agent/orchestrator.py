@@ -25,6 +25,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from src.agent.consent import ConsentDecision, classify_consent
 from src.agent.dialogue import DialogueManager
@@ -34,6 +35,9 @@ from src.providers.llm.base import LLMProvider
 from src.providers.stt.base import STTProvider
 from src.providers.tts.base import TTSProvider
 from src.providers.types import AudioChunk, Message, Role
+
+if TYPE_CHECKING:
+    from src.agent.streaming import ChunkPolicy
 
 log = logging.getLogger("echoassist.orchestrator")
 
@@ -98,6 +102,7 @@ class VoicePipeline:
         max_history_messages: int = 20,
         max_consent_attempts: int = 2,
         stream_coalesce: bool = False,
+        chunk_policy: ChunkPolicy | None = None,
     ) -> None:
         self._stt = stt
         self._llm = llm
@@ -107,6 +112,7 @@ class VoicePipeline:
         self._max_history = max_history_messages
         self._max_consent_attempts = max_consent_attempts
         self._stream_coalesce = stream_coalesce  # local-playback smoothing (off = true streaming)
+        self._chunk_policy = chunk_policy        # low-latency chunking (None = whole sentences)
         self._consent_attempts = 0
         self._consent_granted = False
         self._history: list[Message] = [Message(Role.SYSTEM, domain.system_prompt)]
@@ -240,7 +246,7 @@ class VoicePipeline:
         # tts timing + the first-audio event are recorded inside synthesize_streaming.
         audio_stream = synthesize_streaming(
             text_stream, self._tts, clean=strip_citations,
-            coalesce_sentences=self._stream_coalesce,
+            coalesce_sentences=self._stream_coalesce, policy=self._chunk_policy,
         )
         return transcript.text, audio_stream
 

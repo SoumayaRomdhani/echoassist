@@ -102,6 +102,14 @@ class Settings(BaseSettings):
     # local sd.play mic transport, but raises TTFA (waits for the whole sentence). Off by
     # default = true streaming (yield the first audio chunk as soon as TTS returns it).
     tts_local_smoothing: bool = False
+    # Low-latency TTS text chunking (domain-agnostic): flush LLM text to TTS on a comma once
+    # it holds MIN_WORDS, after MAX_WORDS, or when it stalls MAX_DELAY_MS — so the agent starts
+    # speaking a clause into a long reply. Off => fall back to whole-sentence streaming. A
+    # domain YAML may override any value under `tts_stream:` (min_words/max_words/max_delay_ms).
+    tts_stream_early_chunking: bool = True
+    tts_stream_min_words: int = 3
+    tts_stream_max_words: int = 10
+    tts_stream_max_delay_ms: int = 400
     domain: str = "screening"
 
     # --- STT: faster-whisper ---

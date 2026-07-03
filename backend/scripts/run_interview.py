@@ -37,6 +37,7 @@ from src.agent.grounding import GroundedResponder
 from src.agent.notes import load_notes_schema
 from src.agent.orchestrator import VoicePipeline
 from src.agent.state import ConversationState
+from src.agent.streaming import resolve_chunk_policy
 from src.audio.io import stream_wav
 from src.audio.playback import play
 from src.console import FAIL, bold, dim, init_console
@@ -113,6 +114,7 @@ async def main() -> None:
     pipeline = VoicePipeline(
         build_stt(settings), llm, build_tts(settings), domain, dialogue=dialogue,
         stream_coalesce=settings.tts_local_smoothing,
+        chunk_policy=resolve_chunk_policy(settings, domain),
     )
 
     play_audio = not args.no_play

@@ -12,10 +12,16 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from src.observability import latency
 from src.providers.tts.base import TTSProvider
 from src.providers.types import AudioChunk, AudioFormat
+
+if TYPE_CHECKING:
+    from config.settings import Settings
+    from src.agent.domain import DomainConfig
 
 _SENTENCE_END = re.compile(r"[.!?](\s+|$)")
 
@@ -36,25 +42,108 @@ def split_complete_sentences(buffer: str) -> tuple[list[str], str]:
     return sentences, buffer[last:]
 
 
+# --------------------------------------------------------------------------- #
+# Low-latency, domain-agnostic text chunking for TTS (Phase B)                #
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True, slots=True)
+class ChunkPolicy:
+    """When to flush buffered LLM text to TTS — earlier than a full sentence, for low TTFA.
+
+    Domain-agnostic: no hardcoded phrases, no slot/recruiting assumptions. Tuned globally
+    in settings and optionally overridden per domain (``tts_stream:`` in the domain YAML).
+    """
+
+    min_words: int = 3       # never flush a soft/stale chunk shorter than this (avoid tiny bits)
+    max_words: int = 10      # force a flush after this many words if no punctuation appeared
+    max_delay_ms: int = 400  # once a chunk is >= min_words, flush it if text stalls this long
+
+
+_SENTENCE_BOUNDARY = re.compile(r"[.!?]+(?=\s)")   # sentence punctuation followed by space
+_SOFT_BOUNDARY = re.compile(r"[,;:]+(?=\s)")        # comma / semicolon / colon followed by space
+_COMPLETE_WORD = re.compile(r"\S+(?=\s)")   # a fully-arrived word (has trailing whitespace)
+
+
+def _word_count(text: str) -> int:
+    return len(text.split())
+
+
+def _next_chunk(buffer: str, policy: ChunkPolicy, *, stale: bool) -> tuple[str | None, str]:
+    """Take the next flushable chunk from ``buffer`` per ``policy``; else ``(None, buffer)``."""
+    # 1. Sentence boundary -> always flush (a natural, complete unit of any length).
+    match = _SENTENCE_BOUNDARY.search(buffer)
+    if match:
+        cut = match.end()
+        return buffer[:cut].strip(), buffer[cut:]
+    # 2. Soft boundary -> flush the earliest comma/;/: that already has >= min_words before it.
+    for soft in _SOFT_BOUNDARY.finditer(buffer):
+        if _word_count(buffer[: soft.end()]) >= policy.min_words:
+            cut = soft.end()
+            return buffer[:cut].strip(), buffer[cut:]
+    # 3. Word cap -> a clause is dragging with no punctuation: flush max_words whole words.
+    words = list(_COMPLETE_WORD.finditer(buffer))
+    if len(words) >= policy.max_words:
+        cut = words[policy.max_words - 1].end()
+        return buffer[:cut].strip(), buffer[cut:]
+    # 4. Stalled (no new text for max_delay) and we already have a speakable chunk -> flush it.
+    if stale and len(words) >= policy.min_words:
+        cut = words[-1].end()
+        return buffer[:cut].strip(), buffer[cut:]
+    return None, buffer
+
+
+def _flush_chunks(buffer: str, policy: ChunkPolicy, *, stale: bool) -> tuple[list[str], str]:
+    chunks: list[str] = []
+    while True:
+        chunk, buffer = _next_chunk(buffer, policy, stale=stale)
+        if chunk is None:
+            break
+        if chunk:
+            chunks.append(chunk)
+    return chunks, buffer
+
+
+def resolve_chunk_policy(settings: Settings, domain: DomainConfig | None) -> ChunkPolicy | None:
+    """Build the chunk policy from settings, with an optional per-domain YAML override.
+
+    Returns ``None`` when early chunking is disabled — the caller then falls back to the
+    original sentence-only streaming. The domain override lives under ``tts_stream:`` in the
+    interview flow YAML, so tuning a domain needs no code change.
+    """
+    if not settings.tts_stream_early_chunking:
+        return None
+    override = (domain.flow.get("tts_stream") or {}) if domain is not None else {}
+    return ChunkPolicy(
+        min_words=int(override.get("min_words", settings.tts_stream_min_words)),
+        max_words=int(override.get("max_words", settings.tts_stream_max_words)),
+        max_delay_ms=int(override.get("max_delay_ms", settings.tts_stream_max_delay_ms)),
+    )
+
+
 async def synthesize_streaming(
     text_stream: AsyncIterator[str],
     tts: TTSProvider,
     *,
     clean: Callable[[str], str] = _identity,
     coalesce_sentences: bool = False,
+    policy: ChunkPolicy | None = None,
 ) -> AsyncIterator[AudioChunk]:
     """True LLM->TTS streaming: yield each TTS audio chunk **as soon as the provider
-    returns it** (lowest time-to-first-audio). Text is still chunked by sentence.
+    returns it** (lowest time-to-first-audio).
 
-    ``clean`` is applied to each complete sentence before synthesis (e.g. to strip
-    ``[source]`` citations so they are not spoken). ``coalesce_sentences=True`` buffers a
-    sentence's audio into one chunk before yielding — a *local-playback smoothing* option
-    that trades TTFA for gap-free playback on the ``sd.play`` mic transport; **off by
-    default** so we stream truly.
+    Text chunking: with a :class:`ChunkPolicy` (``policy``), text is flushed to TTS early —
+    on sentence punctuation, on a comma/;/: once it holds ``min_words``, after ``max_words``,
+    or when it stalls for ``max_delay_ms`` — so the agent starts speaking a clause into a
+    long reply instead of after the whole sentence. With ``policy=None`` it falls back to the
+    original sentence-only splitting.
 
-    Records per-turn metrics (no-op unless LATENCY_LOGGING): ``tts_first_byte_ms`` (first
-    sentence), ``sentence_tts_total_ms`` (first sentence full synth), ``tts_chunks_count``,
-    and the ``first_audio`` event that drives ``ttfa_ms``.
+    ``clean`` is applied to each chunk before synthesis (e.g. to strip ``[source]`` citations
+    so they are not spoken). ``coalesce_sentences=True`` buffers a chunk's audio into one
+    :class:`AudioChunk` before yielding — a *local-playback smoothing* option that trades TTFA
+    for gap-free playback on the ``sd.play`` mic transport; **off by default**.
+
+    Records per-turn metrics (no-op unless LATENCY_LOGGING): ``tts_first_byte_ms``,
+    ``sentence_tts_total_ms`` (first flushed chunk), ``tts_chunks_count``, and the
+    ``first_audio`` event that drives ``ttfa_ms``.
     """
     got_first = False
     chunk_count = 0
@@ -86,14 +175,20 @@ async def synthesize_streaming(
             first_sentence_recorded = True
 
     buffer = ""
+    last_flush = time.perf_counter()
     async for delta in text_stream:
         buffer += delta
-        sentences, buffer = split_complete_sentences(buffer)
-        for sentence in sentences:
-            spoken = clean(sentence)
+        if policy is None:
+            texts, buffer = split_complete_sentences(buffer)   # fallback: whole sentences
+        else:
+            stale = (time.perf_counter() - last_flush) * 1000.0 >= policy.max_delay_ms
+            texts, buffer = _flush_chunks(buffer, policy, stale=stale)
+        for text in texts:
+            spoken = clean(text)
             if spoken:
                 async for chunk in _speak(spoken):
                     yield chunk
+                last_flush = time.perf_counter()
     remainder = clean(buffer.strip())
     if remainder:
         async for chunk in _speak(remainder):
