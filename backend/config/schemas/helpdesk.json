@@ -1,0 +1,60 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "helpdesk_notes",
+  "description": "Structured notes captured from an internal IT helpdesk call. This flow is caller-led (config/interview_flows/helpdesk.yaml has no slots), so every field is inferred from the transcript by the notes extractor. Booleans are modeled as yes/no/unknown enums so schema repair (agent/notes.py) coerces them safely.",
+  "type": "object",
+  "properties": {
+    "issue_category": {
+      "type": "string",
+      "enum": ["vpn", "password", "mfa", "email", "network", "hardware", "performance", "access", "security", "other", "unknown"],
+      "description": "Best-fit category for the reported issue."
+    },
+    "issue_summary": {
+      "type": "string",
+      "description": "One-sentence summary of the problem in the employee's own terms."
+    },
+    "affected_system": {
+      "type": "string",
+      "description": "The system, app, or device involved (e.g. VPN client, Outlook, laptop, finance share). Empty if unclear."
+    },
+    "urgency": {
+      "type": "string",
+      "enum": ["low", "normal", "high", "critical", "unknown"],
+      "description": "How blocking the issue is for the employee's work."
+    },
+    "steps_attempted": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Troubleshooting steps tried during the call, in order."
+    },
+    "resolution_status": {
+      "type": "string",
+      "enum": ["resolved", "unresolved", "escalated", "unknown"],
+      "description": "Outcome of the call: fixed, still open, handed to a human, or not determined."
+    },
+    "escalation_required": {
+      "type": "string",
+      "enum": ["yes", "no", "unknown"],
+      "description": "Whether the issue needs a human team (unresolved, out of KB, unsafe, or beyond the assistant's authority)."
+    },
+    "escalation_reason": {
+      "type": "string",
+      "description": "Short reason for escalation if required, otherwise empty."
+    },
+    "security_sensitive": {
+      "type": "string",
+      "enum": ["yes", "no", "unknown"],
+      "description": "Whether the call touched a security-sensitive matter (suspicious MFA prompt, credential exposure, lost device, refused unsafe request)."
+    },
+    "follow_up_notes": {
+      "type": "string",
+      "description": "Anything a human agent should know to follow up, otherwise empty."
+    }
+  },
+  "required": [
+    "issue_category",
+    "issue_summary",
+    "resolution_status",
+    "escalation_required"
+  ]
+}

@@ -1,0 +1,73 @@
+# Retrieval gold set for the helpdesk domain (bilingual KB: EN + FR queries over
+# EN docs). Each query maps to the single best source document; retrieval must
+# surface it near the top. Covers concrete issues, vague phrasings, ASR-like
+# noisy text without accents/punctuation, and refused-but-retrievable security
+# requests (they should hit the policy that governs the refusal).
+#
+# `queries` is what `src.eval.retrieval_eval` scores (Recall@K / nDCG@K). The
+# separate `off_topic` list is NOT retrieval-scored — those belong to the
+# grounding gate (`src.eval.grounding_eval`), where the correct behaviour is to
+# REFUSE, so they intentionally map to no document.
+domain: helpdesk
+queries:
+  # --- English: concrete issues ---
+  - query: "I cannot connect to the VPN"
+    relevant: [vpn_troubleshooting.md]
+  - query: "The VPN says authentication failed"
+    relevant: [vpn_troubleshooting.md]
+  - query: "I forgot my password and my account is locked"
+    relevant: [password_reset.md]
+  - query: "How do I set up MFA on my new phone?"
+    relevant: [mfa_setup.md]
+  - query: "I got an approval prompt on my phone that I did not request"
+    relevant: [mfa_setup.md]
+  - query: "My Outlook will not connect and keeps asking for a password"
+    relevant: [email_access.md]
+  - query: "My laptop is very slow during video calls"
+    relevant: [laptop_slow.md]
+  - query: "How do I request access to the finance folder?"
+    relevant: [account_permissions.md]
+  - query: "I need a replacement charger for my work laptop"
+    relevant: [hardware_request.md]
+  - query: "I can't connect to the office Wi-Fi"
+    relevant: [wifi_network.md]
+  - query: "How do I open a support ticket and what are the severity levels?"
+    relevant: [escalation_policy.md]
+  # --- English: vague, but answerable ---
+  - query: "I can't log in to anything this morning"
+    relevant: [password_reset.md]
+  - query: "The internet keeps dropping while I work from home"
+    relevant: [wifi_network.md]
+  # --- Security / unsafe requests (retrievable to the governing policy) ---
+  - query: "Can you give me the admin password?"
+    relevant: [security_policy.md]
+  - query: "Can I turn off MFA so I can log in faster?"
+    relevant: [security_policy.md]
+  - query: "A colleague is asking me to share my password, is that okay?"
+    relevant: [security_policy.md]
+  # --- French (-> EN docs; multilingual embedder + reranker) ---
+  - query: "Je n'arrive pas à me connecter au VPN"
+    relevant: [vpn_troubleshooting.md]
+  - query: "J'ai changé de téléphone et je n'ai plus accès au MFA"
+    relevant: [mfa_setup.md]
+  - query: "J'ai oublié mon mot de passe et mon compte est bloqué"
+    relevant: [password_reset.md]
+  - query: "Comment demander l'accès au dossier finance ?"
+    relevant: [account_permissions.md]
+  - query: "Mon ordinateur portable est très lent"
+    relevant: [laptop_slow.md]
+  # --- ASR-like: French without accents or punctuation (no diacritics from STT) ---
+  - query: "je narrive pas a me connecter au vpn"
+    relevant: [vpn_troubleshooting.md]
+  - query: "jai oublie mon mot de passe et mon compte est bloque"
+    relevant: [password_reset.md]
+  - query: "mon outlook ne marche pas"
+    relevant: [email_access.md]
+
+# Off-topic — NOT retrieval-scored. The grounding gate should REFUSE these
+# (no confident chunk), so they map to no document by design.
+off_topic:
+  - "What is the weather today?"
+  - "Can you book me a taxi to the airport?"
+  - "What's a good recipe for pizza?"
+  - "Who won the football match last night?"

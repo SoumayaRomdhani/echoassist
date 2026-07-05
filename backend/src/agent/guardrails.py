@@ -14,7 +14,7 @@ import re
 # --- Grounding ------------------------------------------------------------- #
 _REFUSAL = (
     "I don't have that information in the knowledge base. I'll note it and have a "
-    "recruiter follow up."
+    "human support agent follow up."
 )
 
 

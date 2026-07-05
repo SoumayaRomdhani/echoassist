@@ -26,9 +26,9 @@ log = logging.getLogger("echoassist.agent.grounding")
 SEARCH_TOOL = ToolSpec(
     name="search_knowledge_base",
     description=(
-        "Search the screening knowledge base for passages relevant to the caller's "
-        "question. Call this before answering any factual question about the role, "
-        "company, hiring process, benefits, or policies."
+        "Search the domain knowledge base for passages relevant to the caller's "
+        "question. Call this before answering any factual question, using only the "
+        "returned passages."
     ),
     parameters={
         "type": "object",
@@ -64,7 +64,7 @@ _GROUNDING_RULES = (
     "returned passages — do not use outside knowledge. Cite every fact with its source "
     "filename in square brackets exactly as shown, e.g. [interview_process.md]. If the "
     "passages do not contain the answer, say you don't have that information and will "
-    "have a recruiter follow up. Keep the answer concise and natural, as if spoken."
+    "have a human support agent follow up. Keep the answer concise and natural, as if spoken."
 )
 
 

@@ -113,7 +113,7 @@ async def test_off_domain_low_confidence_is_deterministically_refused() -> None:
     assert answer.retrieved == []          # weak chunk filtered by the gate
     assert answer.citations == []
     assert "sunny" not in answer.text      # hallucination NOT returned
-    assert "recruiter" in answer.text.lower()   # deterministic refusal
+    assert "support agent" in answer.text.lower()   # deterministic refusal
 
 
 @pytest.mark.asyncio
