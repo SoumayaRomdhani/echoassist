@@ -42,9 +42,35 @@ _FOLLOWUP_RE = re.compile(
     r"|still (?:not working|broken|the same|nothing|doesn'?t|does\s?n'?t)"
     r"|same (?:problem|issue|thing)|same as before"
     r"|tell me more|more please|go on|continue|next|and then|then what|what else|what now"
-    r"|only (?:in|when|during|sometimes|if)|sometimes|not always|all the time|every time"
+    r"|only (?:in|on|when|during|sometimes|if|with|for)|sometimes|not always|all the time"
+    r"|every time"
     r"|that worked|it works now|it'?s working|fixed|resolved|all good|solved"
     r")\b",
+    re.I,
+)
+
+# A follow-up that asks to CONTINUE the current issue / get the next step ("then what?",
+# "what now", "next", "it didn't work", "same problem"). Distinct from a resolution ("that
+# worked") or "no more". Used so the engine keeps the thread instead of treating it as small
+# talk and resetting to the opening line.
+_CONTINUATION_RE = re.compile(
+    r"\b(?:"
+    r"then what|what next|what'?s next|whats next|and then|and after|after that|next step|next"
+    r"|now what|so what do|go on|carry on|keep going|continue|tell me more|what else"
+    r"|what (?:to do|do i do|should i do|do we do)|what do i do then|what to do then"
+    r"|other (?:solution|option)s?|another (?:option|way|solution)|any other (?:option|way)"
+    r"|tried that|did that|didn'?t work|does\s?n'?t work|not working|didn'?t help|no luck"
+    r"|no change|still (?:not working|broken|the same|nothing|doesn'?t|does\s?n'?t)"
+    r"|same (?:problem|issue|thing)"
+    r")\b",
+    re.I,
+)
+
+# A plain acceptance of the agent's previous offer ("yes", "go ahead", "please do") — used to
+# stop the agent re-offering/looping once the caller has already said yes.
+_AFFIRM_RE = re.compile(
+    r"^\s*(?:yes|yeah|yep|yup|sure|ok(?:ay)?|please(?:\s+do(?:\s+that)?)?|go ahead|do that|do it"
+    r"|sounds good|absolutely|of course|that works|let'?s do (?:it|that))\b",
     re.I,
 )
 
@@ -74,6 +100,19 @@ def is_followup_fragment(text: str) -> bool:
     """True for terse replies ("yes", "I tried that", "only in video calls") that must be
     interpreted against the active topic rather than retrieved as a standalone query."""
     return bool(_FOLLOWUP_RE.match(text or ""))
+
+
+def is_continuation(text: str) -> bool:
+    """True when the caller wants the NEXT step of the current issue ("then what?", "next",
+    "it didn't work") — a thread-continuing turn that must never be treated as small talk or
+    reset the conversation to the opening line."""
+    return bool(_CONTINUATION_RE.search(text or ""))
+
+
+def is_affirmation(text: str) -> bool:
+    """True for a plain 'yes / go ahead / please do' — used to detect the caller accepting the
+    agent's previous offer, so the agent confirms and moves on instead of repeating it."""
+    return bool(_AFFIRM_RE.match(text or ""))
 
 
 def indicates_failure(text: str) -> bool:
@@ -144,12 +183,13 @@ class ContinuityTracker:
         ``decision`` is a ``TurnDecision`` (imported lazily by the caller to avoid a cycle);
         we only read ``intent``, ``caller_question`` and ``answer_value`` off it.
         """
-        followup = is_followup_fragment(transcript)
-        # A genuinely new issue/question (not a terse follow-up) becomes the active topic.
+        # A "what next?" / "it didn't work" continuation must NEVER become the topic (the live
+        # bug where "What to do then?" overwrote the issue and the thread was lost).
+        thread = is_followup_fragment(transcript) or is_continuation(transcript)
         new_issue = (decision.caller_question or "").strip()
-        if new_issue and not followup:
+        if new_issue and not thread:
             state.active_topic = new_issue
-        elif not state.active_topic and not followup:
+        elif not state.active_topic and not thread:
             state.active_topic = transcript.strip()
 
         # "I tried that / it didn't work" retires the last suggested step to failed_steps,
@@ -182,17 +222,38 @@ class ContinuityTracker:
     # query, where instructions like "ask a clarifying question" would both dilute the vector
     # and tempt the model to skip retrieval entirely.
     def build_search_query(self, state: ConversationState, transcript: str, decision) -> str:
-        """Clean, keyword-focused query for retrieval — anchored on the active topic so a
-        terse follow-up ("only on wifi", "it didn't work") still pulls the same procedure."""
+        """Clean, semantic query for retrieval — anchored on the active topic and (for a
+        thread-continuing turn) the caller's evolving detail plus the last step the agent
+        gave, so "then what?" / "it didn't work" / "only on wifi" keep pulling the SAME
+        procedure instead of resetting or drifting to another document.
+
+        Deliberately free of instruction text and keyword dumps: the embedder/reranker match
+        best on concise, on-topic language. Domain ``retrieval_hints`` live only in the context
+        the model reads (build_context), never here — a stray word like "laptop" in an email
+        problem should not drag in slow-laptop keywords.
+        """
         current = (decision.caller_question or decision.answer_value or transcript).strip()
-        followup = is_followup_fragment(transcript)
+        thread = is_followup_fragment(transcript) or is_continuation(transcript)
+
+        previous_turns = state.transcript[:-1]  # current user turn was just appended
+        previous_users = [
+            str(t["text"]) for t in previous_turns if t.get("role") == "user" and t.get("text")
+        ][-2:]
 
         ordered: list[str] = []
-        # For a terse follow-up, lead with the remembered topic so keywords aren't just "yes".
-        if state.active_topic and (followup or state.active_topic.lower() not in current.lower()):
+        # For a thread turn (terse or "then what"), lead with the remembered topic so the query
+        # isn't just "yes"/"then what".
+        if state.active_topic and (thread or state.active_topic.lower() not in current.lower()):
             ordered.append(state.active_topic)
         ordered.append(current or transcript)
-        ordered.extend(self._matched_hints(" ".join([state.active_topic, transcript, current])))
+        if thread:
+            # Keep the SAME procedure: the caller's own recent words + the document the agent is
+            # already working from (its recent citations, humanized). NOT the agent's whole
+            # verbose reply, which bloated and drifted the query in the live run.
+            ordered.extend(previous_users)
+            ordered.extend(
+                s.replace(".md", "").replace("_", " ") for s in state.recent_sources[-2:]
+            )
 
         seen: set[str] = set()
         clean: list[str] = []
@@ -243,12 +304,23 @@ class ContinuityTracker:
             parts.append(f"Relevant KB search hints: {' | '.join(hints)}")
         if self._continuity_prompt:
             parts.append(self._continuity_prompt)
+        # The caller just said "yes / go ahead" to a question or offer the agent made -> confirm
+        # and move on; do NOT repeat the same offer (the live escalation loop).
+        if last_assistant.rstrip().endswith("?") and is_affirmation(transcript):
+            parts.append(
+                "The caller has just AGREED to what you proposed. Confirm it is being handled, "
+                "do NOT repeat the same offer or question, and then ask if there is anything else."
+            )
         guidance = (
-            "Stay on the caller's active issue. Give exactly one next step or one clarifying "
-            "question, using only the retrieved passages. If a step was already tried, continue "
-            "with the NEXT step from the passages — never invent a step that is not in them. If "
-            "the passages do not cover it, do not say so literally; offer to escalate or have a "
-            "human follow up."
+            "This is a continuing conversation — build on what was already said; do not start "
+            "over or repeat your opening line, and do not repeat an offer the caller already "
+            "answered. Briefly acknowledge the caller's last message without assuming or inventing "
+            "anything they did not actually say, then give the single next step from the retrieved "
+            "passages. Do not re-ask anything they have already answered, and once you have enough "
+            "to act, prefer a concrete next step over another clarifying question. If a step was "
+            "already tried, move to the NEXT step in the passages — never invent one. If the "
+            "passages do not cover it, do not say so literally; offer to escalate or have a human "
+            "follow up."
         )
         if self._escalation_wording:
             guidance += f" Escalation wording to use if needed: {self._escalation_wording}"

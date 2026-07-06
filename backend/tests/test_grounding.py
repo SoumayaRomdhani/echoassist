@@ -249,6 +249,9 @@ def test_spoken_removes_dangling_reference_phrases_left_by_citations() -> None:
     # No dangling "in"/"according to"/"as mentioned in" survives anywhere.
     for broken in ("according to.", "as mentioned in.", " in.", "steps in."):
         assert broken not in _spoken("Do X, according to [a.md]. See it as mentioned in [b.md].")
+    # A possessive before the citation is absorbed too ("as per our." was leaking into audio).
+    assert _spoken("I'll follow up, as per our [escalation_policy.md].") == "I'll follow up."
+    assert _spoken("It's in the [manual.md].") == "It's."
 
 
 def test_spoken_preserves_legitimate_words_before_punctuation() -> None:

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
-from src.agent.continuity import ContinuityTracker
+from src.agent.continuity import ContinuityTracker, is_continuation
 from src.agent.domain import DomainConfig
 from src.agent.grounding import GroundedResponder, strip_citations
 from src.agent.guardrails import redact_pii
@@ -349,23 +349,48 @@ class DialogueManager:
     def _plan(self, current: State, transcript: str, decision: TurnDecision) -> _Reply:
         """Decide the reply (and apply slot/state mutations); deliver it later."""
         if decision.intent is TurnIntent.META:
-            return self._plan_meta(current, decision)  # canned reply, no retrieval, stay put
+            # In a caller-led (grounded_qa) flow with an active issue, "then what?", "next",
+            # "it didn't work" are NOT small talk — they continue the thread. Don't reset to the
+            # opening line; ground them so the agent gives the next step.
+            if (
+                current.type == "grounded_qa"
+                and self._state.active_topic
+                and is_continuation(transcript)
+            ):
+                decision = TurnDecision(
+                    intent=TurnIntent.ANSWER,
+                    answer_value=decision.answer_value,
+                    caller_question=decision.caller_question,
+                )
+            else:
+                return self._plan_meta(current, decision)  # canned reply, no retrieval, stay put
         if current.type == "question":
             return self._plan_question(current, transcript, decision)
         if current.type == "grounded_qa":
             return self._plan_grounded_qa(transcript, decision)
         return _Reply(parts=[current.prompt], ended=True)  # close
 
+    def _last_assistant_line(self) -> str:
+        """The last thing the agent actually said (not the static state prompt), so a 'repeat'
+        or generic meta re-anchor doesn't jump back to the opening line mid-conversation."""
+        return next(
+            (t["text"] for t in reversed(self._state.transcript)
+             if t.get("role") == "assistant" and t.get("text")),
+            "",
+        )
+
     def _plan_meta(self, current: State, decision: TurnDecision) -> _Reply:
-        """A procedural/small-talk turn: reply cheaply and stay on the current line (no RAG)."""
+        """A procedural/small-talk turn: reply cheaply and stay put (no RAG). Re-anchors to the
+        agent's *last line*, not the state prompt, so it never resets to the opening greeting."""
+        anchor = self._last_assistant_line() or current.prompt
         if decision.meta is MetaKind.REPEAT:
-            text = f"Sure — {current.prompt}"
+            text = f"Sure — {anchor}"
         elif decision.meta is MetaKind.WAIT:
             text = "Take your time."
         elif decision.meta is MetaKind.PERMISSION:
             text = "Of course, go ahead."
         else:  # classifier-detected meta without a specific kind: acknowledge + re-anchor
-            text = f"Of course. {current.prompt}"
+            text = f"Of course. {anchor}"
         return _Reply([text], ended=False, intent=TurnIntent.META)
 
     def _plan_question(self, state: State, transcript: str, decision: TurnDecision) -> _Reply:

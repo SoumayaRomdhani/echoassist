@@ -52,6 +52,7 @@ _CITATION_PATTERN = re.compile(
     r"|(?:described|outlined|mentioned|noted|shown|listed|found|detailed)\s+in"
     r"|in|per"
     r")\s+)?"
+    r"(?:(?:our|the)\s+)?"          # absorb a dangling possessive ("as per our [x]", "in the [x]")
     r"\[[^\]]*\]",
     re.I,
 )

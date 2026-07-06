@@ -310,9 +310,75 @@ async def test_llm_classifier_falls_back_to_unclear_on_bad_json() -> None:
 # Conversation continuity (domain-agnostic multi-turn coherence)              #
 # --------------------------------------------------------------------------- #
 from src.agent.continuity import (  # noqa: E402 — grouped with the tests that use it
+    ContinuityTracker,
     indicates_failure,
+    is_affirmation,
+    is_continuation,
     is_followup_fragment,
 )
+
+
+def test_continuation_phrases_are_recognized_but_resolutions_are_not() -> None:
+    for cont in ("then what?", "what next", "and then?", "it didn't work", "same problem",
+                 "next step please", "so what do I do now", "still not working",
+                 "what to do then?", "don't have other solutions?"):
+        assert is_continuation(cont), cont
+    # A resolution or a brand-new question is not a "continue the thread" signal.
+    assert not is_continuation("that worked, thanks")
+    assert not is_continuation("what is the salary for this role?")
+
+
+def test_affirmation_detects_acceptance_but_not_refusal() -> None:
+    for yes in ("yes", "yes please", "please do that", "go ahead", "sure", "ok do it"):
+        assert is_affirmation(yes), yes
+    assert not is_affirmation("no thanks")
+    assert not is_affirmation("not yet")
+
+
+def test_continuation_never_overwrites_the_active_topic() -> None:
+    """The live bug: "What to do then?" (mis-classified as a new question) wiped the issue."""
+    tracker = ContinuityTracker()
+    state = ConversationState(call_id="c")
+    tracker.note_user_turn(
+        state, "I can't open my email",
+        TurnDecision(TurnIntent.QUESTION, caller_question="I can't open my email"),
+    )
+    assert state.active_topic == "I can't open my email"
+
+    tracker.note_user_turn(
+        state, "What to do then?",
+        TurnDecision(TurnIntent.QUESTION, caller_question="What to do then?"),
+    )
+    assert state.active_topic == "I can't open my email"   # thread preserved
+
+
+def test_thread_search_anchors_on_recent_source_not_the_agent_paragraph() -> None:
+    tracker = ContinuityTracker()
+    state = ConversationState(call_id="c")
+    state.active_topic = "can't open my email"
+    state.recent_sources = ["email_access.md", "password_reset.md"]
+    state.add_turn("user", "Then what to do?")
+
+    query = tracker.build_search_query(
+        state, "Then what to do?", TurnDecision(TurnIntent.ANSWER),
+    )
+    assert "can't open my email" in query.lower()
+    assert "password reset" in query.lower()      # the document the agent is working from
+    assert "[" not in query and len(query) < 200  # clean, not a giant blob
+
+
+def test_context_flags_caller_acceptance_so_the_agent_stops_re_offering() -> None:
+    tracker = ContinuityTracker()
+    state = ConversationState(call_id="c")
+    state.add_turn("assistant", "I can raise a ticket. Would you like me to do that?")
+    state.add_turn("user", "Yes, please do that.")
+
+    context = tracker.build_context(
+        state, "Yes, please do that.",
+        TurnDecision(TurnIntent.ANSWER, answer_value="yes"),
+    )
+    assert "AGREED" in context
+    assert "do NOT repeat" in context
 
 
 def test_followup_fragments_are_recognized_but_real_questions_are_not() -> None:
@@ -396,6 +462,52 @@ async def test_tried_that_didnt_work_continues_same_topic_and_records_failed_ste
     assert follow_up != "I tried that, it didn't work"
     assert "printer is offline" in follow_up
     assert "Steps already tried without success: Try restarting the device." in follow_up
+
+
+@pytest.mark.asyncio
+async def test_continuation_followup_is_not_treated_as_small_talk_reset() -> None:
+    """The live bug: "Then what to do?" was classified meta and the agent replied with its
+    opening line. A continuation in a caller-led flow must ground the next step instead."""
+    responder = _responder("Next, open the self-service portal.", citations=["kb.md"])
+    mgr = _manager(
+        [
+            TurnDecision(TurnIntent.QUESTION, caller_question="I can't reset my password"),
+            TurnDecision(TurnIntent.META),   # classifier mislabels "then what?" as small talk
+        ],
+        responder,
+        state=_grounded_state(),
+    )
+
+    await mgr.handle_turn("I can't reset my password")
+    turn = await mgr.handle_turn("Then what to do?")
+
+    # It grounded the follow-up (2 RAG calls) instead of re-reading the opening prompt.
+    assert len(responder.questions) == 2
+    assert "Any questions for me?" not in turn.text          # did NOT reset to the state prompt
+    assert turn.text == "Next, open the self-service portal."
+    assert mgr.state.state_index == 2                          # stayed on the same state
+    # The follow-up search kept the thread (topic + the caller's turn), not a bare fragment.
+    assert responder.search_queries[-1] != "Then what to do?"
+    assert "reset my password" in responder.search_queries[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_meta_repeat_rereads_last_answer_not_the_opening_line() -> None:
+    """"Can you repeat?" mid-conversation repeats the agent's last line, not the greeting."""
+    responder = _responder(
+        "Go to reset.acteek.local and choose Forgot password.", citations=["kb.md"]
+    )
+    mgr = _manager(
+        [TurnDecision(TurnIntent.QUESTION, caller_question="password reset")],
+        responder,
+        state=_grounded_state(),
+    )
+
+    await mgr.handle_turn("how do I reset my password?")
+    turn = await mgr.handle_turn("sorry, can you repeat that?")
+
+    assert turn.text == "Sure — Go to reset.acteek.local and choose Forgot password."
+    assert "Any questions for me?" not in turn.text            # not the opening state prompt
 
 
 @pytest.mark.asyncio
