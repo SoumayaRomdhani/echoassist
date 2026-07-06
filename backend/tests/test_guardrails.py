@@ -21,7 +21,9 @@ def test_is_grounded_threshold() -> None:
 
 
 def test_refusal_message_is_safe() -> None:
-    assert "follow up" in refusal_message().lower()
+    message = refusal_message().lower()
+    assert "one more detail" in message
+    assert "knowledge base" not in message
 
 
 def test_redacts_email_and_phone() -> None:

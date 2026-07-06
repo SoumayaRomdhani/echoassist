@@ -117,10 +117,12 @@ class _ScriptedClassifier:
 
 
 class _CannedResponder:
-    async def answer(self, question: str) -> GroundedAnswer:
+    async def answer(self, question: str, *, search_query: str | None = None) -> GroundedAnswer:
         return GroundedAnswer(text="It is fully remote.", citations=["remote_work_policy.md"])
 
-    async def answer_streaming(self, question: str) -> AsyncIterator[str]:
+    async def answer_streaming(
+        self, question: str, *, search_query: str | None = None
+    ) -> AsyncIterator[str]:
         yield "It is fully remote "
         yield "[remote_work_policy.md]."
 

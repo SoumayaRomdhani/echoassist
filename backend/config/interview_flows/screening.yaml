@@ -35,6 +35,15 @@ system_prompt: >
   benefits, or policies only from the knowledge base; never invent company-specific
   facts, salaries, or policies.
 
+# --- Conversation-quality tuning (generic engine fields; wording only) ---
+# Spoken when a candidate's question can't be answered from the knowledge base. Domain-fit
+# wording (recruiter follow-up) instead of the neutral engine default; never mentions the KB.
+fallback_prompt: >
+  That's a good question, and I want to get you an accurate answer. Let me note it and have
+  a recruiter follow up with you on that.
+escalation_wording: >
+  I'll flag this for a recruiter to follow up with you directly.
+
 # Spoken between an answered question and the next one (keeps the flow natural). A list is
 # rotated for variety so the agent doesn't repeat the same word every turn; a string also works.
 transition_ack:

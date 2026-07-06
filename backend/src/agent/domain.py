@@ -33,6 +33,16 @@ class DomainConfig:
     consent_reprompt: str
     consent_decline: str
     flow: dict = field(default_factory=dict)
+    # Optional conversation-quality tuning (all domain-agnostic; blank => engine defaults):
+    #   fallback_prompt    -> deterministic reply when nothing confident is retrieved
+    #                         (never mentions the knowledge base to the caller).
+    #   escalation_wording -> phrase the agent offers when a procedure is exhausted.
+    #   continuity_prompt  -> extra guidance folded into the context-anchored RAG query.
+    # The mechanisms live in the generic dialogue/grounding/continuity layer; these only
+    # tune wording, so existing and future domains benefit without engine changes.
+    fallback_prompt: str = ""
+    escalation_wording: str = ""
+    continuity_prompt: str = ""
 
 
 def list_available_domains(config_dir: Path) -> list[str]:
@@ -67,4 +77,7 @@ def load_domain_config(domain: str, config_dir: Path) -> DomainConfig:
         consent_reprompt=str(data.get("consent_reprompt", _DEFAULT_CONSENT_REPROMPT)).strip(),
         consent_decline=str(data.get("consent_decline", _DEFAULT_CONSENT_DECLINE)).strip(),
         flow=data,
+        fallback_prompt=str(data.get("fallback_prompt", "")).strip(),
+        escalation_wording=str(data.get("escalation_wording", "")).strip(),
+        continuity_prompt=str(data.get("continuity_prompt", "")).strip(),
     )

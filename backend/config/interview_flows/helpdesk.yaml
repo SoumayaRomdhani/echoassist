@@ -64,6 +64,42 @@ transition_ack:
   - "Alright."
   - "Understood."
 
+# --- Conversation-quality tuning (generic engine fields; wording only) ---
+# Spoken when nothing confident is retrieved. Never says "not in the knowledge base";
+# asks for one detail and offers a human hand-off (the engine default is domain-neutral).
+fallback_prompt: >
+  I want to get you to the right fix. Could you tell me which system, app, or device this
+  is about — or I can open a ticket so a human colleague takes it from here.
+# Offered when a documented procedure is exhausted.
+escalation_wording: >
+  I can raise a ticket to our support team with what we've tried so far and have them follow up.
+# Folded into the context-anchored retrieval query to keep multi-turn support coherent.
+continuity_prompt: >
+  This is a continuing IT support conversation. Keep working the caller's current issue and
+  the steps already tried; do not restart from scratch or re-ask what they already answered.
+
+# Query expansions for caller-led support. These do not answer the caller; they
+# only help retrieval bridge app-specific wording (for example "Visual Studio is
+# slow") to the broader approved procedure ("slow laptop").
+retrieval_hints:
+  laptop: "slow laptop, unresponsive computer, CPU, memory, disk space, Task Manager, startup apps, background apps, large files, video calls"
+  slow: "slow laptop, performance troubleshooting, restart, disk cleanup, CPU, memory, background apps"
+  visual studio: "slow laptop, application performance, CPU, memory, large files, background apps"
+  vs code: "slow laptop, application performance, CPU, memory, large files, background apps"
+  teams: "slow laptop during video calls, close tabs, disable background blur, network quality"
+  video: "slow laptop during video calls, close tabs, disable background blur, network quality"
+  vpn: "VPN troubleshooting, authentication failed, password changed, network connectivity"
+  password: "password reset, locked account, self-service password reset"
+  mfa: "MFA setup, new phone, suspicious approval prompt"
+  outlook: "email access, Outlook password prompt, mailbox connection"
+  email: "email access, Outlook, mailbox connection"
+  wifi: "office Wi-Fi troubleshooting, wireless network"
+  wi-fi: "office Wi-Fi troubleshooting, wireless network"
+  access: "account permissions, access request, shared folder, finance folder"
+  folder: "account permissions, access request, shared folder, finance folder"
+  charger: "hardware request, replacement charger, work laptop"
+  admin: "security policy, admin password, privileged access, unsafe request"
+
 # Ordered states (read by agent/dialogue.py).
 #   type: grounded_qa -> caller-led turn: classify, then answer substantive issues via RAG,
 #                        stay put on meta/small-talk, advance only when the caller is done.

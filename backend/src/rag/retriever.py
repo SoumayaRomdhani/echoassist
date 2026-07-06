@@ -80,8 +80,22 @@ class Retriever:
         ranked_ids = sorted(fused, key=fused.get, reverse=True)[: self._candidates]
 
         passages = [chunks[cid].text for cid in ranked_ids]
-        with latency.span("rag_rerank_ms"):
-            rerank_scores = self._reranker.rerank(query, passages)
+        try:
+            with latency.span("rag_rerank_ms"):
+                rerank_scores = self._reranker.rerank(query, passages)
+        except Exception as exc:  # noqa: BLE001 — reranker resilience: never fail a live turn
+            # A cloud reranker (e.g. Voyage free tier: 3 RPM) can rate-limit or go down. Rather
+            # than error the whole turn — which surfaces to the caller as a refusal — degrade
+            # gracefully to the RRF-fused order. ranked_ids is already sorted by RRF, so we keep
+            # that ranking and use the RRF score for the grounding gate.
+            log.warning("reranker failed (%s); falling back to RRF-fused order", exc)
+            return [
+                ScoredChunk(
+                    chunk=chunks[cid], score=fused[cid],
+                    components={"rrf": fused[cid], "rerank": None},
+                )
+                for cid in ranked_ids
+            ][: self._top_k]
 
         scored = [
             ScoredChunk(

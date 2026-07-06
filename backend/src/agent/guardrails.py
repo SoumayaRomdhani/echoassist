@@ -12,9 +12,13 @@ import math
 import re
 
 # --- Grounding ------------------------------------------------------------- #
+# Domain-NEUTRAL default fallback for when nothing confident is retrieved. Per policy it
+# never says "not in the knowledge base" to the caller; instead it asks for one clarifying
+# detail and offers a human follow-up. Domains override the wording via
+# DomainConfig.fallback_prompt (config/interview_flows/*.yaml) — see agent/grounding.py.
 _REFUSAL = (
-    "I don't have that information in the knowledge base. I'll note it and have a "
-    "human support agent follow up."
+    "I want to make sure I get this right — could you give me one more detail? "
+    "Otherwise I can have a colleague follow up with you."
 )
 
 

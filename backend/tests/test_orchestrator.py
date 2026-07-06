@@ -182,7 +182,7 @@ async def test_consent_acceptance_is_persisted_by_the_pipeline() -> None:
 
 
 class _StreamingResponder:
-    async def answer_streaming(self, question: str):
+    async def answer_streaming(self, question: str, *, search_query: str | None = None):
         for delta in ["The role is fully remote ", "[remote_work_policy.md]. ", "It is in the EU."]:
             yield delta
 

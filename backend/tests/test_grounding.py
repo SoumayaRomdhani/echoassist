@@ -68,7 +68,7 @@ async def test_direct_answer_without_tool_call() -> None:
 
     assert answer.tool_calls == 0
     assert answer.citations == []
-    assert "don't have" in answer.text
+    assert "one more detail" in answer.text.lower()
 
 
 def _grounded_llm(answer_text: str, query: str) -> ScriptedLLM:
@@ -113,7 +113,7 @@ async def test_off_domain_low_confidence_is_deterministically_refused() -> None:
     assert answer.retrieved == []          # weak chunk filtered by the gate
     assert answer.citations == []
     assert "sunny" not in answer.text      # hallucination NOT returned
-    assert "support agent" in answer.text.lower()   # deterministic refusal
+    assert "one more detail" in answer.text.lower()   # deterministic refusal
 
 
 @pytest.mark.asyncio
@@ -129,6 +129,97 @@ async def test_no_confident_chunk_never_invents_an_answer() -> None:
     assert "made-up" not in answer.text.lower()
 
 
+@pytest.mark.asyncio
+async def test_deterministic_fallback_never_mentions_knowledge_base() -> None:
+    """Fallback must never leak the internal 'knowledge base' phrasing to the caller (req 5)."""
+    llm = _grounded_llm("The answer is 42.", "anything")
+    responder = GroundedResponder(
+        llm, FakeRetriever([]), system_prompt="s", min_confidence=0.1
+    )
+    answer = await responder.answer("something out of scope")
+    assert "knowledge base" not in answer.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_domain_fallback_wording_is_used_when_configured() -> None:
+    """A domain may override the fallback wording; the engine uses it verbatim (req 5, 7)."""
+    custom = "Let me open a ticket and a colleague will call you back."
+    llm = _grounded_llm("Invented steps.", "anything")
+    responder = GroundedResponder(
+        llm, FakeRetriever([]), system_prompt="s", min_confidence=0.1, fallback_message=custom
+    )
+    answer = await responder.answer("unresolved issue")
+    assert answer.text == custom
+    assert "invented" not in answer.text.lower()
+    assert "knowledge base" not in answer.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_streaming_fallback_uses_configured_wording() -> None:
+    """The streaming path shares the same configurable, KB-free fallback."""
+    custom = "I'll have a teammate follow up with you shortly."
+    responder = GroundedResponder(
+        _grounded_llm("x", "q"), FakeRetriever([]), system_prompt="s",
+        min_confidence=0.1, fallback_message=custom,
+    )
+    out = "".join([delta async for delta in responder.answer_streaming("out of scope")])
+    assert out == custom
+    assert "knowledge base" not in out.lower()
+
+
+# --------------------------------------------------------------------------- #
+# Retrieve-then-read (caller-led flows pass a clean search query)             #
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_retrieve_then_read_grounds_on_given_query_without_tool_roundtrip() -> None:
+    """With a clean search_query the responder retrieves first and reads — it never lets the
+    model skip retrieval (the live bug where a good answer was replaced by the fallback)."""
+    chunk = ScoredChunk(Chunk("laptop_slow.md#0", "laptop_slow.md", "free disk space", 0), 2.0)
+    retriever = FakeRetriever([chunk])
+    llm = ScriptedLLM([LLMResponse(text="Let's free up disk space [laptop_slow.md].")])
+
+    answer = await _responder(llm, retriever).answer(
+        "Recent caller context: laptop slow\nCaller replied: still slow",
+        search_query="slow laptop disk space Task Manager",
+    )
+
+    assert retriever.queries == ["slow laptop disk space Task Manager"]  # our clean query drove it
+    assert llm.calls == 1 and llm.tools_offered == [False]  # one read call, no search tool hop
+    assert answer.citations == ["laptop_slow.md"]
+    assert answer.text == "Let's free up disk space."
+
+
+@pytest.mark.asyncio
+async def test_retrieve_then_read_falls_back_without_calling_the_model() -> None:
+    weak = ScoredChunk(Chunk("x.md#0", "x.md", "irrelevant", 0), -5.0)  # below the gate
+    llm = ScriptedLLM([])  # must NOT be consulted when nothing is confidently retrieved
+    responder = GroundedResponder(
+        llm, FakeRetriever([weak]), system_prompt="s", min_confidence=0.1
+    )
+    answer = await responder.answer("ctx", search_query="off topic")
+
+    assert llm.calls == 0
+    assert answer.citations == []
+    assert "knowledge base" not in answer.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_retrieve_then_read_streaming_grounds_on_query() -> None:
+    src = "vpn_troubleshooting.md"
+    chunk = ScoredChunk(Chunk(f"{src}#0", src, "reset", 0), 2.0)
+    retriever = FakeRetriever([chunk])
+    llm = ScriptedLLM([LLMResponse(text="Restart the VPN client [vpn_troubleshooting.md].")])
+
+    deltas = [
+        d async for d in _responder(llm, retriever).answer_streaming(
+            "Caller replied: still failing", search_query="vpn authentication failed"
+        )
+    ]
+
+    assert retriever.queries == ["vpn authentication failed"]
+    assert "Restart the VPN client" in "".join(deltas)
+
+
 def test_search_tool_schema_is_well_formed() -> None:
     assert SEARCH_TOOL.name == "search_knowledge_base"
     assert SEARCH_TOOL.parameters["required"] == ["query"]
@@ -141,3 +232,29 @@ def test_spoken_strips_citations_and_tidies_punctuation() -> None:
     assert _spoken("It is fully remote [remote_work_policy.md].") == "It is fully remote."
     assert _spoken("Pay is 65k [a.md] to 85k [b.md].") == "Pay is 65k to 85k."
     assert "[" not in _spoken("See [x.md] for details [y.md]")
+
+
+def test_spoken_removes_dangling_reference_phrases_left_by_citations() -> None:
+    """After citation removal the audio must not contain broken half-phrases (req 6)."""
+    from src.agent.grounding import _spoken
+
+    # "as mentioned in.", "according to.", "... steps in.", and a bare dangling "in".
+    assert _spoken("Use the portal as mentioned in [account_permissions.md].") == "Use the portal."
+    assert _spoken("Reset it, according to [password_reset.md].") == "Reset it."
+    assert _spoken("The next step is in [laptop_slow.md].") == "The next step is."
+    assert (
+        _spoken("I found the troubleshooting steps in [laptop_slow.md]. Let's restart.")
+        == "I found the troubleshooting steps. Let's restart."
+    )
+    # No dangling "in"/"according to"/"as mentioned in" survives anywhere.
+    for broken in ("according to.", "as mentioned in.", " in.", "steps in."):
+        assert broken not in _spoken("Do X, according to [a.md]. See it as mentioned in [b.md].")
+
+
+def test_spoken_preserves_legitimate_words_before_punctuation() -> None:
+    """A real word that merely sits before punctuation (no citation) must survive."""
+    from src.agent.grounding import _spoken
+
+    assert _spoken("Please log in.") == "Please log in."
+    assert _spoken("Sign in to continue.") == "Sign in to continue."
+    assert _spoken("That depends on the plan.") == "That depends on the plan."

@@ -207,6 +207,7 @@ class DefaultCallEngine(CallEngine):
             self._pool.retriever(domain),
             system_prompt=domain_cfg.system_prompt,
             min_confidence=self._settings.grounding_min_confidence,
+            fallback_message=domain_cfg.fallback_prompt or None,
         )
         dialogue = DialogueManager(
             classifier=LLMTurnClassifier(llm),

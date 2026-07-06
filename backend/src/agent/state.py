@@ -27,6 +27,17 @@ class ConversationState:
     query_history: list[str] = field(default_factory=list)
     question_attempts: dict[str, int] = field(default_factory=dict)  # per-question retry counter
 
+    # --- Conversation continuity: domain-agnostic local memory (agent/continuity.py) ---
+    # A small rolling picture of *this* thread so follow-up turns ("yes", "I tried that",
+    # "only in video calls") are interpreted against what is already on the table instead of
+    # being searched as isolated queries. Populated by ContinuityTracker; JSON-serializable
+    # so it round-trips through Redis exactly like the rest of the state.
+    active_topic: str = ""                        # current issue / goal being worked
+    last_assistant_question: str = ""             # the agent's last question to the caller
+    suggested_steps: list[str] = field(default_factory=list)  # steps/options already offered
+    failed_steps: list[str] = field(default_factory=list)     # steps tried that didn't work
+    recent_sources: list[str] = field(default_factory=list)   # recently retrieved doc sources
+
     def add_turn(self, role: str, text: str) -> None:
         self.transcript.append({"role": role, "text": text})
 

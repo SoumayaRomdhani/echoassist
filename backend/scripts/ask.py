@@ -35,6 +35,7 @@ async def main() -> None:
         build_retriever(settings),
         system_prompt=domain.system_prompt,
         min_confidence=settings.grounding_min_confidence,
+        fallback_message=domain.fallback_prompt or None,
     )
 
     print(f"\n{bold('QUESTION:')} {args.question}")

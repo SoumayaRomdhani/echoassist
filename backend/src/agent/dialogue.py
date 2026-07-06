@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
+from src.agent.continuity import ContinuityTracker
 from src.agent.domain import DomainConfig
 from src.agent.grounding import GroundedResponder, strip_citations
 from src.agent.guardrails import redact_pii
@@ -111,6 +112,15 @@ async def _empty_stream() -> AsyncIterator[str]:
         yield _
 
 
+# Bracketed source markers (e.g. "[laptop_slow.md]") left in raw streamed text before
+# citation stripping — used to tell a grounded step apart from conversational glue.
+_SOURCE_MARKER = re.compile(r"\[([^\[\]]+?\.[a-z0-9]+)\]", re.I)
+
+
+def _sources_in(text: str) -> list[str]:
+    return _SOURCE_MARKER.findall(text)
+
+
 @dataclass(frozen=True, slots=True)
 class TurnDecision:
     intent: TurnIntent
@@ -124,13 +134,13 @@ class TurnClassifier(Protocol):
 
 
 _CLASSIFY_SYSTEM = (
-    'You label one caller utterance during a phone job-screening interview. The '
-    'interviewer just asked: "{question}". Reply with ONLY a JSON object, nothing else:\n'
+    'You label one caller utterance during a voice-agent conversation. The '
+    'agent just asked: "{question}". Reply with ONLY a JSON object, nothing else:\n'
     '{{"intent": "answer|question|meta|done|unclear", "answer_value": "", "caller_question": ""}}\n'
-    "- answer: the caller answered the interviewer's question; put a short normalized "
+    "- answer: the caller answered the agent's current question; put a short normalized "
     "value in answer_value.\n"
-    "- question: the caller asked a SUBSTANTIVE question about the role, company, team, "
-    "process, benefits, or policies (it needs the knowledge base); put it in caller_question.\n"
+    "- question: the caller asked a substantive domain question or reported a new issue "
+    "that needs the knowledge base; put it in caller_question.\n"
     "- meta: a procedural or small-talk remark that is NOT a knowledge question — e.g. asking "
     "permission to ask, asking you to repeat, or saying to hold on.\n"
     "- done: the caller signaled they have no more questions or nothing to add.\n"
@@ -174,9 +184,16 @@ class DialogueTurn:
 
 @dataclass(frozen=True, slots=True)
 class _Grounded:
-    """A reply part to be answered from the knowledge base."""
+    """A reply part to be answered from the knowledge base.
+
+    ``question`` is the rich context the model reads; ``search_query`` is the clean query used
+    for retrieval. When ``search_query`` is set the responder retrieves-then-reads (always
+    grounds on that query); when empty it falls back to letting the model choose its own
+    search (screening's one-shot question detours).
+    """
 
     question: str
+    search_query: str = ""
 
 
 @dataclass(slots=True)
@@ -203,6 +220,9 @@ class DialogueManager:
         self._classifier = classifier
         self._responder = responder
         self._states = load_states(domain)
+        # Domain-agnostic multi-turn continuity (active topic, last question, tried/failed
+        # steps, sources) + context-anchored query building. See agent/continuity.py.
+        self._continuity = ContinuityTracker.from_domain(domain)
         # Transition acknowledgements, spoken before the next question so the flow isn't
         # abrupt. A pool (domain YAML `transition_ack:` may be a string or a list) rotated for
         # variety, so the agent doesn't repeat the same word every turn.
@@ -255,13 +275,16 @@ class DialogueManager:
         citations: list[str] = []
         for part in plan.parts:
             if isinstance(part, _Grounded):
-                answer = await self._responder.answer(part.question)
+                answer = await self._responder.answer(
+                    part.question, search_query=part.search_query or None
+                )
                 pieces.append(answer.text)
                 citations.extend(answer.citations)
             else:
                 pieces.append(part)
         text = " ".join(p for p in pieces if p).strip()
 
+        self._continuity.record_assistant(self._state, text, citations)
         self._state.add_turn("assistant", text)
         await self._store.save(self._state)
         return DialogueTurn(text=text, ended=plan.ended, citations=citations, intent=plan.intent)
@@ -288,14 +311,19 @@ class DialogueManager:
         raw = ""
         for part in plan.parts:
             if isinstance(part, _Grounded):
-                async for delta in self._responder.answer_streaming(part.question):
+                stream = self._responder.answer_streaming(
+                    part.question, search_query=part.search_query or None
+                )
+                async for delta in stream:
                     raw += delta
                     yield delta
             else:
                 chunk = f"{part} "
                 raw += chunk
                 yield chunk
-        self._state.add_turn("assistant", strip_citations(raw))
+        spoken = strip_citations(raw)
+        self._continuity.record_assistant(self._state, spoken, _sources_in(raw))
+        self._state.add_turn("assistant", spoken)
         await self._store.save(self._state)
 
     async def handle_turn_streaming(self, transcript: str) -> AsyncIterator[str]:
@@ -365,9 +393,16 @@ class DialogueManager:
     def _plan_grounded_qa(self, transcript: str, decision: TurnDecision) -> _Reply:
         if decision.intent is TurnIntent.DONE:
             return self._advance(prepend_ack=False)
-        question = decision.caller_question or transcript
-        self._state.query_history.append(question)
-        return _Reply([_Grounded(question)], ended=False, intent=decision.intent)
+        # Fold this turn into the continuity memory, then retrieve with a CLEAN query while the
+        # model reads the RICH context — so a terse follow-up ("yes", "I tried that", "only in
+        # video calls") keeps the same issue and the agent never skips retrieval.
+        self._continuity.note_user_turn(self._state, transcript, decision)
+        context = self._continuity.build_context(self._state, transcript, decision)
+        search_query = self._continuity.build_search_query(self._state, transcript, decision)
+        self._state.query_history.append(search_query)
+        return _Reply(
+            [_Grounded(context, search_query=search_query)], ended=False, intent=decision.intent
+        )
 
     def _next_ack(self) -> str:
         """The next transition acknowledgement, cycling the pool so it isn't always the same."""

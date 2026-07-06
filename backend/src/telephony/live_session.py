@@ -342,6 +342,7 @@ def _build_dialogue(
         responder=GroundedResponder(
             llm, retriever, system_prompt=domain.system_prompt,
             min_confidence=settings.grounding_min_confidence,
+            fallback_message=domain.fallback_prompt or None,
         ),
         domain=domain,
         state=state,

@@ -40,7 +40,7 @@ class _FakeClassifier:
 
 
 class _FakeResponder:
-    async def answer(self, question: str) -> GroundedAnswer:
+    async def answer(self, question: str, *, search_query: str | None = None) -> GroundedAnswer:
         return GroundedAnswer(text="ok", citations=[])
 
 

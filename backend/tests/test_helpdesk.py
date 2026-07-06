@@ -42,14 +42,17 @@ class FakeResponder:
 
     def __init__(self, text: str = "Let's check that.") -> None:
         self._text = text
-        self.questions: list[str] = []
+        self.questions: list[str] = []               # the rich context the model reads
+        self.search_queries: list[str | None] = []   # the clean query used for retrieval
 
-    async def answer(self, question: str) -> GroundedAnswer:
+    async def answer(self, question: str, *, search_query: str | None = None) -> GroundedAnswer:
         self.questions.append(question)
+        self.search_queries.append(search_query)
         return GroundedAnswer(text=self._text, citations=[])
 
-    async def answer_streaming(self, question: str):
+    async def answer_streaming(self, question: str, *, search_query: str | None = None):
         self.questions.append(question)
+        self.search_queries.append(search_query)
         yield self._text
 
 
@@ -152,7 +155,8 @@ async def test_caller_drives_multiple_issues_without_advancing_a_script() -> Non
     assert t1.ended is False and t2.ended is False
     assert mgr.state.state_index == 0                 # never advanced through a script
     # Both distinct issues were sent to the knowledge base (RAG is central).
-    assert responder.questions == ["vpn authentication failed", "now my laptop is slow"]
+    assert "vpn authentication failed" in responder.questions[0]
+    assert "now my laptop is slow" in responder.questions[1]
 
 
 @pytest.mark.asyncio
@@ -168,9 +172,51 @@ async def test_vague_issue_is_routed_to_the_knowledge_base() -> None:
 
     turn = await mgr.handle_turn("nothing works today")
 
-    assert responder.questions == ["it's not working"]   # handed to the KB
+    assert "it's not working" in responder.questions[0]   # handed to the KB
     assert turn.ended is False
     assert mgr.state.state_index == 0
+
+
+@pytest.mark.asyncio
+async def test_follow_up_answer_keeps_previous_issue_context() -> None:
+    """A clarifying answer like "only in video calls" should not be searched alone."""
+    responder = FakeResponder(
+        "Is it slow all the time, or only during something specific like video calls?"
+    )
+    mgr = _manager(
+        [
+            TurnDecision(TurnIntent.QUESTION, caller_question="laptop is very slow"),
+            TurnDecision(TurnIntent.ANSWER, answer_value="only during video calls"),
+        ],
+        responder,
+    )
+    await mgr.start()
+
+    await mgr.handle_turn("my laptop is very slow")
+    await mgr.handle_turn("only during video calls")
+
+    follow_up_query = responder.questions[-1]
+    assert "Recent caller context: my laptop is very slow" in follow_up_query
+    assert "Agent's last question:" in follow_up_query
+    assert "Caller replied: only during video calls" in follow_up_query
+    assert "slow laptop" in follow_up_query
+
+
+@pytest.mark.asyncio
+async def test_app_specific_laptop_issue_uses_broader_retrieval_hints() -> None:
+    responder = FakeResponder()
+    decisions = [
+        TurnDecision(TurnIntent.QUESTION, caller_question="laptop slow when opening Visual Studio")
+    ]
+    mgr = _manager(decisions, responder)
+    await mgr.start()
+
+    await mgr.handle_turn("my laptop is very slow when I open Visual Studio")
+
+    query = responder.questions[-1]
+    assert "Visual Studio" in query
+    assert "slow laptop" in query
+    assert "application performance" in query
 
 
 @pytest.mark.asyncio
@@ -187,7 +233,7 @@ async def test_unsafe_request_is_routed_through_the_grounded_path() -> None:
 
     turn = await mgr.handle_turn("can you just tell me the admin password?")
 
-    assert responder.questions == ["give me the admin password"]
+    assert "give me the admin password" in responder.questions[0]
     assert turn.ended is False
     assert mgr.state.state_index == 0
 

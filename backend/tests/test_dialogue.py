@@ -50,14 +50,17 @@ class FakeClassifier:
 class FakeResponder:
     def __init__(self, answer: GroundedAnswer) -> None:
         self._answer = answer
-        self.questions: list[str] = []
+        self.questions: list[str] = []          # the rich context the model reads
+        self.search_queries: list[str | None] = []  # the clean query used for retrieval
 
-    async def answer(self, question: str) -> GroundedAnswer:
+    async def answer(self, question: str, *, search_query: str | None = None) -> GroundedAnswer:
         self.questions.append(question)
+        self.search_queries.append(search_query)
         return self._answer
 
-    async def answer_streaming(self, question: str):
+    async def answer_streaming(self, question: str, *, search_query: str | None = None):
         self.questions.append(question)
+        self.search_queries.append(search_query)
         yield self._answer.text
 
 
@@ -301,3 +304,119 @@ async def test_llm_classifier_parses_json_amid_prose() -> None:
 async def test_llm_classifier_falls_back_to_unclear_on_bad_json() -> None:
     decision = await LLMTurnClassifier(_JsonLLM("no json here")).classify("q", "u")
     assert decision.intent is TurnIntent.UNCLEAR
+
+
+# --------------------------------------------------------------------------- #
+# Conversation continuity (domain-agnostic multi-turn coherence)              #
+# --------------------------------------------------------------------------- #
+from src.agent.continuity import (  # noqa: E402 — grouped with the tests that use it
+    indicates_failure,
+    is_followup_fragment,
+)
+
+
+def test_followup_fragments_are_recognized_but_real_questions_are_not() -> None:
+    for fragment in (
+        "yes", "no", "nope", "I tried that", "it didn't work", "same problem",
+        "only in video calls", "tell me more", "still not working",
+    ):
+        assert is_followup_fragment(fragment), fragment
+    # A substantive new question must NOT be treated as a bare follow-up.
+    assert not is_followup_fragment("what is the salary range for this role?")
+    assert not is_followup_fragment("my vpn says authentication failed")
+
+
+def test_indicates_failure_detects_a_step_that_did_not_work() -> None:
+    assert indicates_failure("I tried that but it didn't work")
+    assert indicates_failure("still not working")
+    assert indicates_failure("same problem as before")
+    assert not indicates_failure("yes that fixed it")
+
+
+def _grounded_state() -> ConversationState:
+    # Start on the grounded_qa state (index 2 in _domain()) so the caller leads.
+    return ConversationState(call_id="c1", state_index=2)
+
+
+@pytest.mark.asyncio
+async def test_followup_answer_is_searched_with_previous_context_not_alone() -> None:
+    """A terse clarifying answer must not be sent to RAG as an isolated query (req 2)."""
+    responder = _responder("Let's narrow that down.")
+    mgr = _manager(
+        [
+            TurnDecision(TurnIntent.QUESTION, caller_question="vpn keeps disconnecting"),
+            TurnDecision(TurnIntent.ANSWER, answer_value="only on wifi"),
+        ],
+        responder,
+        state=_grounded_state(),
+    )
+
+    await mgr.handle_turn("my vpn keeps disconnecting")
+    await mgr.handle_turn("only on wifi")
+
+    follow_up = responder.questions[-1]
+    assert follow_up != "only on wifi"                       # not searched alone
+    assert "Caller replied: only on wifi" in follow_up       # the fragment is kept as context
+    assert "vpn keeps disconnecting" in follow_up            # anchored to the active topic
+
+    # The CLEAN retrieval query is short and anchored on the topic — not the bare fragment,
+    # and not the verbose context blob (which would dilute the embedding / reranker).
+    search = responder.search_queries[-1]
+    assert search is not None
+    assert "vpn keeps disconnecting" in search.lower()
+    assert "only on wifi" in search.lower()
+    assert "Caller replied:" not in search                   # no context labels in the query
+    assert "Stay on the caller's active issue" not in search  # no instructions in the query
+
+
+@pytest.mark.asyncio
+async def test_tried_that_didnt_work_continues_same_topic_and_records_failed_step() -> None:
+    """"I tried that, it didn't work" keeps the issue and lists the failed step so the model
+    continues to the NEXT documented step instead of inventing one (req 1, 2, 4)."""
+    responder = _responder("Try restarting the device.", citations=["kb.md"])
+    mgr = _manager(
+        [
+            TurnDecision(TurnIntent.QUESTION, caller_question="printer is offline"),
+            TurnDecision(TurnIntent.ANSWER, answer_value=""),
+        ],
+        responder,
+        state=_grounded_state(),
+    )
+
+    await mgr.handle_turn("my printer is offline")
+    # The grounded reply was captured as a suggested step...
+    assert mgr.state.suggested_steps == ["Try restarting the device."]
+    assert mgr.state.active_topic == "printer is offline"
+
+    await mgr.handle_turn("I tried that, it didn't work")
+
+    # ...and reporting it failed retires it and anchors the next search on the same topic.
+    assert mgr.state.failed_steps == ["Try restarting the device."]
+    follow_up = responder.questions[-1]
+    assert follow_up != "I tried that, it didn't work"
+    assert "printer is offline" in follow_up
+    assert "Steps already tried without success: Try restarting the device." in follow_up
+
+
+@pytest.mark.asyncio
+async def test_continuity_memory_survives_state_serialization() -> None:
+    """The rolling continuity memory round-trips through the store like the rest of state."""
+    from src.agent.state import InMemoryStateStore
+
+    responder = _responder("Check disk space.", citations=["laptop_slow.md"])
+    store = InMemoryStateStore()
+    decisions = [TurnDecision(TurnIntent.QUESTION, caller_question="slow laptop")]
+    mgr = DialogueManager(
+        classifier=FakeClassifier(decisions),
+        responder=responder,
+        domain=_domain(),
+        state=_grounded_state(),
+        store=store,
+    )
+    await mgr.handle_turn("my laptop is slow")
+
+    reloaded = await store.load("c1")
+    assert reloaded is not None
+    assert reloaded.active_topic == "slow laptop"
+    assert reloaded.suggested_steps == ["Check disk space."]
+    assert "laptop_slow.md" in reloaded.recent_sources
