@@ -16,10 +16,11 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
-from src.agent.continuity import ContinuityTracker
+from src.agent.continuity import ContinuityTracker, is_closing
+from src.agent.conversation import ConversationAgent
 from src.agent.domain import DomainConfig
 from src.agent.grounding import GroundedResponder, strip_citations
-from src.agent.guardrails import redact_pii
+from src.agent.guardrails import redact_pii, refusal_message
 from src.agent.jsonutil import extract_json
 from src.agent.state import ConversationState, StateStore
 from src.observability import latency
@@ -214,11 +215,17 @@ class DialogueManager:
         domain: DomainConfig,
         state: ConversationState,
         store: StateStore,
+        agent: ConversationAgent | None = None,
         max_question_retries: int = 2,
         redact: bool = True,
     ) -> None:
         self._classifier = classifier
         self._responder = responder
+        # Caller-led (grounded_qa) states are handled by the conversational agent when provided:
+        # the model holds the full conversation and decides when to search (agent/conversation.py).
+        # When it is None the legacy classify -> retrieve-then-read path runs (keeps old tests).
+        self._agent = agent
+        self._fallback = (domain.flow.get("fallback_prompt") or "").strip() or refusal_message()
         self._states = load_states(domain)
         # Domain-agnostic multi-turn continuity (active topic, last question, tried/failed
         # steps, sources) + context-anchored query building. See agent/continuity.py.
@@ -263,6 +270,8 @@ class DialogueManager:
         current = self._current
         if current is None:
             return DialogueTurn(text="", ended=True)
+        if self._agent is not None and current.type == "grounded_qa":
+            return await self._agent_turn(transcript)
         transcript, decision = await self._begin_turn(current, transcript)
         with latency.span("router_ms"):
             plan = self._plan(current, transcript, decision)
@@ -300,12 +309,73 @@ class DialogueManager:
         current = self._current
         if current is None:
             return False, _empty_stream()
+        if self._agent is not None and current.type == "grounded_qa":
+            return await self._agent_stream(transcript)
         transcript, decision = await self._begin_turn(current, transcript)
         with latency.span("router_ms"):
             plan = self._plan(current, transcript, decision)
         is_rag = any(isinstance(part, _Grounded) for part in plan.parts)
         latency.observe(intent=decision.intent.value, is_rag=is_rag)
         return is_rag, self._stream_plan(plan)
+
+    # --- conversational agent path (caller-led grounded_qa states) ---------
+    def _record_user(self, transcript: str) -> str:
+        if self._redact:
+            transcript = redact_pii(transcript)
+        self._state.add_turn("user", transcript)
+        return transcript
+
+    def _advance_to_close(self) -> str:
+        """Jump to the flow's close line and mark the interview finished."""
+        close = next((s for s in self._states if s.type == "close"), None)
+        self._state.state_index = len(self._states)  # finished
+        return close.prompt if close else ""
+
+    async def _agent_turn(self, transcript: str) -> DialogueTurn:
+        transcript = self._record_user(transcript)
+        if is_closing(transcript):
+            text = self._advance_to_close()
+            self._state.add_turn("assistant", text)
+            await self._store.save(self._state)
+            return DialogueTurn(text=text, ended=True)
+
+        self._continuity.remember_user_turn(self._state, transcript)
+        note = self._continuity.state_note(self._state)
+        reply = await self._agent.respond(self._state, state_note=note)
+        text = reply.text or self._fallback
+        self._continuity.record_assistant(self._state, text, reply.citations)
+        self._state.add_turn("assistant", text)
+        await self._store.save(self._state)
+        latency.observe(is_rag=reply.used_rag)
+        return DialogueTurn(text=text, ended=False, citations=reply.citations)
+
+    async def _agent_stream(self, transcript: str) -> tuple[bool, AsyncIterator[str]]:
+        transcript = self._record_user(transcript)
+        if is_closing(transcript):
+            text = self._advance_to_close()
+            return False, self._closing_stream(text)
+
+        self._continuity.remember_user_turn(self._state, transcript)
+        note = self._continuity.state_note(self._state)
+        used_rag, raw_stream = await self._agent.begin_stream(self._state, state_note=note)
+        latency.observe(is_rag=used_rag)
+        return used_rag, self._wrap_agent_stream(raw_stream)
+
+    async def _closing_stream(self, text: str) -> AsyncIterator[str]:
+        self._state.add_turn("assistant", text)
+        await self._store.save(self._state)
+        if text:
+            yield text
+
+    async def _wrap_agent_stream(self, raw_stream: AsyncIterator[str]) -> AsyncIterator[str]:
+        raw = ""
+        async for delta in raw_stream:
+            raw += delta
+            yield delta
+        spoken = strip_citations(raw)
+        self._continuity.record_assistant(self._state, spoken, _sources_in(raw))
+        self._state.add_turn("assistant", spoken)
+        await self._store.save(self._state)
 
     async def _stream_plan(self, plan: _Reply) -> AsyncIterator[str]:
         raw = ""

@@ -161,6 +161,23 @@ def indicates_resolution(text: str) -> bool:
     return bool(_RESOLVED_RE.search(text or ""))
 
 
+# The caller signals the call can wrap up (resolved / no more / goodbye).
+_CLOSING_RE = re.compile(
+    r"\b(?:that'?s all|that'?s it|nothing else|no more|no thank you|no thanks"
+    r"|i'?m (?:good|done|all set|fine now)|all set|we'?re done|goodbye|bye now|hang up"
+    r"|i (?:solved|resolved|fixed) (?:it|my (?:problem|issue))"
+    r"|(?:problem|issue|it) (?:is )?(?:solved|resolved|fixed|working now))\b",
+    re.I,
+)
+
+
+def is_closing(text: str) -> bool:
+    """True when the caller signals the call can end (resolved / no more / goodbye) and is NOT
+    reporting a failure — so "no, that didn't work" never ends the call by accident."""
+    t = text or ""
+    return bool(_CLOSING_RE.search(t)) and not indicates_failure(t)
+
+
 def _load_hints(raw: object) -> list[tuple[str, str]]:
     """Optional domain-configured query expansions ({trigger: expansion} in the YAML)."""
     if not isinstance(raw, dict):
@@ -255,6 +272,37 @@ class ContinuityTracker:
             _append_capped(state.suggested_steps, text, _MAX_STEPS)
         for source in citations:
             _append_capped(state.recent_sources, source, _MAX_SOURCES)
+
+    # --- conversational-agent memory (agent/conversation.py path) ----------
+    def remember_user_turn(self, state: ConversationState, transcript: str) -> None:
+        """Light memory update from a caller turn for the agent path (no classifier): sets the
+        active topic on the first substantive turn and records a step that just failed."""
+        t = (transcript or "").strip()
+        thread = (
+            is_followup_fragment(t) or is_continuation(t) or is_repair(t) or refers_back(t)
+        )
+        if t and not thread and not state.active_topic:
+            state.active_topic = t
+        if indicates_failure(t) and state.suggested_steps:
+            _append_capped(state.failed_steps, state.suggested_steps[-1], _MAX_STEPS)
+
+    def state_note(self, state: ConversationState) -> str:
+        """A short factual memory note injected into the agent's system prompt (topic + steps),
+        so the thread survives even when old turns fall out of the history window."""
+        lines: list[str] = []
+        if state.active_topic:
+            lines.append(f"Current issue: {state.active_topic}")
+        if state.suggested_steps:
+            lines.append(
+                "Steps already given (do not repeat these): "
+                + "; ".join(state.suggested_steps[-4:])
+            )
+        if state.failed_steps:
+            lines.append(
+                "Steps the caller already tried without success: "
+                + "; ".join(state.failed_steps[-4:])
+            )
+        return "\n".join(lines)
 
     # --- query building ----------------------------------------------------
     # NOTE: retrieval and reading are deliberately split. A cross-encoder reranker and a dense

@@ -30,6 +30,7 @@ from config.settings import (
     build_tts,
     get_settings,
 )
+from src.agent.conversation import ConversationAgent
 from src.agent.dialogue import DialogueManager, LLMTurnClassifier
 from src.agent.domain import load_domain_config
 from src.agent.finalize import finalize_call
@@ -103,6 +104,11 @@ async def main() -> None:
     dialogue = DialogueManager(
         classifier=LLMTurnClassifier(llm),
         responder=GroundedResponder(
+            llm, retriever, system_prompt=domain.system_prompt,
+            min_confidence=settings.grounding_min_confidence,
+            fallback_message=domain.fallback_prompt or None,
+        ),
+        agent=ConversationAgent(
             llm, retriever, system_prompt=domain.system_prompt,
             min_confidence=settings.grounding_min_confidence,
             fallback_message=domain.fallback_prompt or None,

@@ -36,6 +36,7 @@ from config.settings import (
     build_vector_store,
     get_settings,
 )
+from src.agent.conversation import ConversationAgent
 from src.agent.dialogue import DialogueManager, LLMTurnClassifier
 from src.agent.domain import DomainConfig, load_domain_config
 from src.agent.finalize import FinalizedCall, finalize_call
@@ -202,9 +203,17 @@ class DefaultCallEngine(CallEngine):
         self, domain: str, domain_cfg: DomainConfig, state: ConversationState, store: StateStore
     ) -> VoicePipeline:
         llm = self._pool.llm()
+        retriever = self._pool.retriever(domain)
         responder = GroundedResponder(
             llm,
-            self._pool.retriever(domain),
+            retriever,
+            system_prompt=domain_cfg.system_prompt,
+            min_confidence=self._settings.grounding_min_confidence,
+            fallback_message=domain_cfg.fallback_prompt or None,
+        )
+        agent = ConversationAgent(
+            llm,
+            retriever,
             system_prompt=domain_cfg.system_prompt,
             min_confidence=self._settings.grounding_min_confidence,
             fallback_message=domain_cfg.fallback_prompt or None,
@@ -212,6 +221,7 @@ class DefaultCallEngine(CallEngine):
         dialogue = DialogueManager(
             classifier=LLMTurnClassifier(llm),
             responder=responder,
+            agent=agent,
             domain=domain_cfg,
             state=state,
             store=store,
