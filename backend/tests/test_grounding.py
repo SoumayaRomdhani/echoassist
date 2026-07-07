@@ -254,6 +254,18 @@ def test_spoken_removes_dangling_reference_phrases_left_by_citations() -> None:
     assert _spoken("It's in the [manual.md].") == "It's."
 
 
+def test_spoken_strips_passive_aggressive_phrases() -> None:
+    """"as I mentioned earlier" / "as I said" must never reach the caller's ears."""
+    from src.agent.grounding import _spoken
+
+    assert (
+        _spoken("Let's reset your password, as I mentioned earlier, can you try that?")
+        == "Let's reset your password, can you try that?"
+    )
+    assert "as i said" not in _spoken("As I said, go to the portal.").lower()
+    assert _spoken("As I said, go to the portal.") == "go to the portal."
+
+
 def test_spoken_preserves_legitimate_words_before_punctuation() -> None:
     """A real word that merely sits before punctuation (no citation) must survive."""
     from src.agent.grounding import _spoken

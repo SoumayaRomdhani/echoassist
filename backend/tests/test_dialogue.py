@@ -315,7 +315,102 @@ from src.agent.continuity import (  # noqa: E402 — grouped with the tests that
     is_affirmation,
     is_continuation,
     is_followup_fragment,
+    is_repair,
 )
+
+
+def test_repair_requests_are_recognized_but_real_questions_are_not() -> None:
+    for repair in ("what?", "I didn't understand", "can you say that simply", "help me do that",
+                   "walk me through it", "what prompts are you talking about?",
+                   "which button?", "how do I do that?"):
+        assert is_repair(repair), repair
+    assert not is_repair("my vpn shows an authentication error")
+    assert not is_repair("the salary range please")
+
+
+def test_covered_steps_are_tracked_even_when_a_step_ends_with_a_question() -> None:
+    """A grounded step is recorded as 'covered' even if phrased as a question, so the agent
+    advances instead of circling back to it."""
+    tracker = ContinuityTracker()
+    state = ConversationState(call_id="c")
+    state.active_topic = "slow laptop"
+    step = "Can you check free space on your C: drive?"
+    tracker.record_assistant(state, step, ["laptop_slow.md"])
+
+    assert state.suggested_steps == [step]
+
+    state.add_turn("user", "I did that, what's next?")
+    context = tracker.build_context(
+        state, "I did that, what's next?", TurnDecision(TurnIntent.ANSWER)
+    )
+    assert "ALREADY given" in context
+    assert "check free space" in context
+    assert "DIFFERENT next step" in context
+
+
+def test_guidance_forbids_false_agency_and_redundant_confirmation() -> None:
+    tracker = ContinuityTracker()
+    state = ConversationState(call_id="c")
+    state.active_topic = "slow laptop"
+    state.add_turn("user", "opera uses the most resources")
+    context = tracker.build_context(
+        state, "opera uses the most resources", TurnDecision(TurnIntent.ANSWER),
+    ).lower()
+    assert "cannot" in context and "never claim you did" in context   # no false "I've done it"
+    assert "off-topic" in context or "off topic" in context           # off-topic handling
+
+
+def test_anaphoric_turn_does_not_overwrite_the_active_topic() -> None:
+    """"How can I do that?" leans on a pronoun -> it points at the active topic, not a new one."""
+    from src.agent.continuity import refers_back
+
+    assert refers_back("how can I do that?")
+    assert not refers_back("my vpn shows an authentication error and won't connect at all")
+
+    tracker = ContinuityTracker()
+    state = ConversationState(call_id="c")
+    tracker.note_user_turn(
+        state, "I can't open my email",
+        TurnDecision(TurnIntent.QUESTION, caller_question="I can't open my email"),
+    )
+    tracker.note_user_turn(
+        state, "how can I do that?",
+        TurnDecision(TurnIntent.QUESTION, caller_question="how to do that"),
+    )
+    assert state.active_topic == "I can't open my email"
+
+
+def test_repair_context_tells_model_to_simplify_its_last_message() -> None:
+    tracker = ContinuityTracker()
+    state = ConversationState(call_id="c")
+    state.active_topic = "reset password"
+    state.add_turn("assistant", "Go to reset.acteek.local, choose Forgot password, then continue.")
+    state.add_turn("user", "what prompts are you talking about?")
+
+    context = tracker.build_context(
+        state, "what prompts are you talking about?", TurnDecision(TurnIntent.ANSWER),
+    )
+    assert "far more simply" in context
+    assert "Do NOT repeat it" in context
+
+
+def test_repair_search_query_is_clean_not_polluted_with_vague_words() -> None:
+    """"Help me doing that" must search the topic + the doc in play, not a pile of fragments."""
+    tracker = ContinuityTracker()
+    state = ConversationState(call_id="c")
+    state.active_topic = "can't open my email"
+    state.recent_sources = ["email_access.md", "password_reset.md"]
+    for turn in ("I do how can I do that?", "Not working for me.", "Help me doing that."):
+        state.add_turn("user", turn)
+
+    query = tracker.build_search_query(
+        state, "Help me doing that.", TurnDecision(TurnIntent.ANSWER),
+    )
+    assert "can't open my email" in query.lower()
+    assert "password reset" in query.lower()          # the document already in play
+    assert "help me" not in query.lower()             # vague words dropped
+    assert "not working for me" not in query.lower()  # no accumulated pollution
+    assert len(query) < 100
 
 
 def test_continuation_phrases_are_recognized_but_resolutions_are_not() -> None:
@@ -377,8 +472,8 @@ def test_context_flags_caller_acceptance_so_the_agent_stops_re_offering() -> Non
         state, "Yes, please do that.",
         TurnDecision(TurnIntent.ANSWER, answer_value="yes"),
     )
-    assert "AGREED" in context
-    assert "do NOT repeat" in context
+    assert "ACT on their answer" in context           # act, don't re-offer
+    assert "do NOT repeat the question" in context
 
 
 def test_followup_fragments_are_recognized_but_real_questions_are_not() -> None:
@@ -489,6 +584,60 @@ async def test_continuation_followup_is_not_treated_as_small_talk_reset() -> Non
     # The follow-up search kept the thread (topic + the caller's turn), not a bare fragment.
     assert responder.search_queries[-1] != "Then what to do?"
     assert "reset my password" in responder.search_queries[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_bare_yes_after_a_step_is_grounded_not_a_canned_of_course() -> None:
+    """"Yes, exactly" mid-issue should make the agent ACT and advance, not reply
+    "Of course. Of course. <repeat>"."""
+    responder = _responder("Great — close Opera's extra tabs and check if it speeds up.", ["kb.md"])
+    mgr = _manager(
+        [
+            TurnDecision(TurnIntent.QUESTION, caller_question="slow laptop"),
+            TurnDecision(TurnIntent.META),   # "yes, exactly" classified as meta
+        ],
+        responder,
+        state=_grounded_state(),
+    )
+
+    await mgr.handle_turn("my laptop is slow")
+    turn = await mgr.handle_turn("yes, exactly")
+
+    assert len(responder.questions) == 2                 # grounded and advanced
+    assert not turn.text.lower().startswith("of course")
+
+
+@pytest.mark.asyncio
+async def test_generic_meta_does_not_stack_of_course_of_course() -> None:
+    state = ConversationState(call_id="c1", state_index=2)  # grounded_qa, no active topic yet
+    state.add_turn("assistant", "Of course, let's restart the laptop.")
+    mgr = _manager([TurnDecision(TurnIntent.META)], _responder(), state=state)
+
+    turn = await mgr.handle_turn("hmm ok")
+
+    assert turn.text.lower().count("of course") == 1
+
+
+@pytest.mark.asyncio
+async def test_repair_request_is_grounded_and_simplified_not_a_canned_dump() -> None:
+    """"What prompts?" / "help me do that" must get a simpler grounded re-explanation, not a
+    verbatim re-dump of the last answer (the live loop)."""
+    responder = _responder("First, open your browser and go to reset.acteek.local.", ["kb.md"])
+    mgr = _manager(
+        [
+            TurnDecision(TurnIntent.QUESTION, caller_question="reset password"),
+            TurnDecision(TurnIntent.META),   # "what prompts?" mislabeled as small talk
+        ],
+        responder,
+        state=_grounded_state(),
+    )
+
+    await mgr.handle_turn("how do I reset my password?")
+    turn = await mgr.handle_turn("what prompts are you talking about?")
+
+    assert len(responder.questions) == 2                 # grounded (simplify), not canned
+    assert "far more simply" in responder.questions[-1]  # context asked it to simplify
+    assert "Any questions for me?" not in turn.text
 
 
 @pytest.mark.asyncio

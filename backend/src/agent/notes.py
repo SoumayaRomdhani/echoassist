@@ -20,31 +20,20 @@ from src.providers.types import Message, Role, ToolSpec
 
 log = logging.getLogger("echoassist.agent.notes")
 
-_RECORD_TOOL_NAME = "record_screening_notes"
-
-# Schema fields that come straight from the interview slots (authoritative).
-_SLOT_FIELDS = (
-    "years_experience",
-    "primary_stack",
-    "availability",
-    "remote_setup",
-    "salary_expectation",
-)
+_RECORD_TOOL_NAME = "record_call_notes"
 
 _SYSTEM = (
-    "You extract structured notes from a completed candidate phone-screening call. "
-    "Use ONLY what the candidate actually said — never invent facts. Call the "
-    f"{_RECORD_TOOL_NAME} tool with the fields. For fields already provided as SLOTS, "
-    "copy the slot value. Infer strengths, concerns, and overall_fit only from the "
+    "You extract structured notes from a completed call. Use ONLY what was actually said — "
+    f"never invent facts. Call the {_RECORD_TOOL_NAME} tool with the fields. For any field "
+    "already provided as a SLOT, copy the slot value. Infer the remaining fields only from the "
     "transcript; if there is no basis, use empty values or \"unknown\"."
 )
 
 _JSON_FALLBACK_SYSTEM = (
-    "You extract structured notes from a completed candidate phone-screening call. "
-    "Use ONLY what the candidate actually said. Return ONLY a JSON object matching "
-    "the provided schema keys; no markdown, no prose. For fields already provided "
-    "as SLOTS, copy the slot value. If there is no basis, use empty values or "
-    "\"unknown\"."
+    "You extract structured notes from a completed call. Use ONLY what was actually said. "
+    "Return ONLY a JSON object matching the provided schema keys; no markdown, no prose. For "
+    "any field already provided as a SLOT, copy the slot value. If there is no basis, use "
+    "empty values or \"unknown\"."
 )
 
 
@@ -109,7 +98,7 @@ class NotesExtractor:
         self._schema = schema
         self._tool = ToolSpec(
             name=_RECORD_TOOL_NAME,
-            description="Record the structured screening notes for this candidate call.",
+            description="Record the structured notes for this call.",
             parameters=schema,
         )
 
@@ -138,10 +127,11 @@ class NotesExtractor:
         else:  # model answered with text instead of calling the tool
             notes = extract_json(response.text) or {}
 
-        # Slots are authoritative for the factual fields.
-        for field in _SLOT_FIELDS:
-            value = state.slots.get(field)
-            if value:
+        # Slots are authoritative: copy any captured slot whose name is a schema field (generic —
+        # no hardcoded per-domain field list, so every current and future domain works).
+        properties = self._schema.get("properties", {})
+        for field, value in state.slots.items():
+            if field in properties and value:
                 notes[field] = value
 
         notes = validate_and_repair(notes, self._schema)  # never persist schema-invalid notes

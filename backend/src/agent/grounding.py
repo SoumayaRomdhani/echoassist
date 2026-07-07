@@ -58,18 +58,33 @@ _CITATION_PATTERN = re.compile(
 )
 
 
+# Passive-aggressive "you weren't listening" phrases that must never reach the caller — on a
+# call they can't recall what was said before, so these only sound like a frustrated machine.
+_BANNED_SPOKEN = re.compile(
+    r"\b(?:"
+    r"as (?:i )?(?:mentioned|said|stated|noted|explained|told you)"
+    r"(?:\s+(?:earlier|before|previously|already|again))?"
+    r"|like i (?:said|mentioned|told you)|as previously (?:mentioned|stated|noted)"
+    r"|as we (?:discussed|talked about)|as you (?:already )?know"
+    r")\b[,]?\s*",
+    re.I,
+)
+
+
 def _spoken(text: str) -> str:
     """Strip bracketed source citations so the spoken answer is natural prose.
 
     The model still emits ``[source]`` (so we can capture the citation in metadata),
     but the caller hears a clean sentence — the filename belongs in the dashboard, not
     the audio. Any connector that only introduced the citation ("according to", "as
-    mentioned in", a dangling "in") is removed with it, so no broken half-phrase is
-    left before the punctuation.
+    mentioned in", a dangling "in") is removed with it, and passive-aggressive "as I said
+    earlier" phrases are dropped, so no broken or toxic phrase is left in the audio.
     """
     stripped = _CITATION_PATTERN.sub("", text)
+    stripped = _BANNED_SPOKEN.sub(" ", stripped)
     stripped = re.sub(r"\s+([.,;:!?])", r"\1", stripped)   # tidy space left before punctuation
     stripped = re.sub(r"\(\s*\)", "", stripped)            # drop any now-empty parentheses
+    stripped = re.sub(r"^[\s,;:]+", "", stripped)          # no leading comma left by a removal
     return re.sub(r"\s{2,}", " ", stripped).strip()
 
 
@@ -83,8 +98,14 @@ _GROUNDING_RULES = (
     "returned passages — do not use outside knowledge. Cite every fact with its source "
     "filename in square brackets exactly as shown, e.g. [interview_process.md]. If the "
     "passages do not contain the answer, ask one useful clarifying question or offer "
-    "escalation; do not mention the knowledge base to the caller. Keep the answer concise "
-    "and natural, as if spoken."
+    "escalation; do not mention the knowledge base to the caller. "
+    "Speak in one or two short spoken sentences: say the information as if you simply know it "
+    "— never narrate your sources or say 'according to', 'the guide', 'the document', 'as I "
+    "mentioned', or 'as I said' — and do not repeat the caller's words back to them. You cannot "
+    "perform actions for the caller — never claim you did something ('I've done', 'I've gone "
+    "ahead'); ask them to do each step. If the caller just answered you, act on their answer "
+    "instead of asking them to confirm it. If the caller did not understand, re-explain your "
+    "last point far more simply as one concrete micro-step; never just repeat the same sentence."
 )
 
 

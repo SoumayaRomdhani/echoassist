@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
-from src.agent.continuity import ContinuityTracker, is_continuation
+from src.agent.continuity import ContinuityTracker
 from src.agent.domain import DomainConfig
 from src.agent.grounding import GroundedResponder, strip_citations
 from src.agent.guardrails import redact_pii
@@ -349,14 +349,13 @@ class DialogueManager:
     def _plan(self, current: State, transcript: str, decision: TurnDecision) -> _Reply:
         """Decide the reply (and apply slot/state mutations); deliver it later."""
         if decision.intent is TurnIntent.META:
-            # In a caller-led (grounded_qa) flow with an active issue, "then what?", "next",
-            # "it didn't work" are NOT small talk — they continue the thread. Don't reset to the
-            # opening line; ground them so the agent gives the next step.
-            if (
-                current.type == "grounded_qa"
-                and self._state.active_topic
-                and is_continuation(transcript)
-            ):
+            # In a caller-led (grounded_qa) flow with an active issue, only the cheap KEYWORD meta
+            # (repeat / permission / hold-on, which set decision.meta) gets a canned reply.
+            # Everything else the classifier calls "meta" — "yes", "exactly", "then what?", "help
+            # me", "say it simply" — is grounded WITH context, so the model acts on it / advances
+            # instead of re-dumping its last line ("Of course. Of course. ...").
+            keyword_meta = decision.meta is not None
+            if current.type == "grounded_qa" and self._state.active_topic and not keyword_meta:
                 decision = TurnDecision(
                     intent=TurnIntent.ANSWER,
                     answer_value=decision.answer_value,
@@ -390,7 +389,10 @@ class DialogueManager:
         elif decision.meta is MetaKind.PERMISSION:
             text = "Of course, go ahead."
         else:  # classifier-detected meta without a specific kind: acknowledge + re-anchor
-            text = f"Of course. {anchor}"
+            # Strip a leading "Of course"/"Sure" from the anchor so we never stack "Of course.
+            # Of course. ..." when re-anchoring on a line that already opened that way.
+            clean_anchor = re.sub(r"^(?:of course|sure|okay|ok)[.,!]?\s*", "", anchor, flags=re.I)
+            text = f"Of course. {clean_anchor}".strip()
         return _Reply([text], ended=False, intent=TurnIntent.META)
 
     def _plan_question(self, state: State, transcript: str, decision: TurnDecision) -> _Reply:

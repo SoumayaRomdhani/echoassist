@@ -60,6 +60,29 @@ def _state_with_slots() -> ConversationState:
 
 
 @pytest.mark.asyncio
+async def test_slot_copy_is_domain_agnostic_not_hardcoded_screening_fields() -> None:
+    """Any captured slot whose name is a schema field is copied — works for helpdesk / any
+    future domain, not just the old hardcoded screening field list."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "issue_category": {"type": "string"},
+            "issue_summary": {"type": "string"},
+            "resolution_status": {"type": "string"},
+        },
+        "required": ["issue_category"],
+    }
+    state = ConversationState(call_id="c1")
+    state.slots = {"issue_category": "vpn", "not_in_schema": "ignored"}
+    state.add_turn("user", "my vpn is down")
+
+    notes = await NotesExtractor(ToolCallLLM({"issue_summary": "vpn down"}), schema).extract(state)
+
+    assert notes["issue_category"] == "vpn"          # non-screening slot copied
+    assert "not_in_schema" not in notes              # unknown keys dropped
+
+
+@pytest.mark.asyncio
 async def test_slots_are_authoritative_over_model_output() -> None:
     llm = ToolCallLLM({
         "years_experience": "WRONG",

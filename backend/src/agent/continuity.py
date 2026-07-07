@@ -115,6 +115,42 @@ def is_affirmation(text: str) -> bool:
     return bool(_AFFIRM_RE.match(text or ""))
 
 
+# The caller did not understand, or wants the agent to do the step WITH them ("what?", "say
+# it simply", "help me do that", "what prompts?", "which button?"). These must NOT trigger a
+# fresh answer or a verbatim repeat — the agent re-explains its LAST point as one micro-step.
+_REPAIR_RE = re.compile(
+    r"(?:^|\b)(?:"
+    r"huh|what\?|come again"
+    r"|(?:i )?(?:didn'?t|don'?t|do not|can'?t) (?:understand|get it|get that|follow|know how)"
+    r"|not sure (?:how|what)|what do you mean|what does that mean|make it simple"
+    r"|say (?:that|it)?\s*(?:again\s*)?(?:more\s*)?(?:simply|simpler|slower)"
+    r"|(?:in )?simpler?(?: terms| words)?|too (?:fast|complicated|technical)"
+    r"|can you (?:explain|clarify|simplify)|explain (?:that|it)"
+    r"|help me (?:do|with)|do it (?:for|with) me|walk me through|step by step|guide me"
+    r"|what (?:prompt|button|link|page|option|step)s?\b|which (?:one|button|link|option)"
+    r"|where (?:is|do|should)|how exactly|how do i do (?:it|that|this)"
+    r")",
+    re.I,
+)
+
+
+def is_repair(text: str) -> bool:
+    """True when the caller signals they did not understand or wants hands-on help with the
+    CURRENT step — so the agent re-explains its last message more simply, never repeats it."""
+    return bool(_REPAIR_RE.search(text or ""))
+
+
+# A short turn built around a back-reference pronoun ("how do I do THAT?", "help with IT")
+# points at the active topic, so it must not overwrite it — a general anaphora signal, not a
+# per-phrase rule.
+_BACKREF_RE = re.compile(r"\b(?:that|this|it|those|them)\b", re.I)
+
+
+def refers_back(text: str) -> bool:
+    """True for a short utterance that leans on a back-reference pronoun (anaphora)."""
+    return len((text or "").split()) <= 8 and bool(_BACKREF_RE.search(text or ""))
+
+
 def indicates_failure(text: str) -> bool:
     """True when the caller reports the previously-suggested step did not work."""
     return bool(_FAILURE_RE.search(text or ""))
@@ -183,9 +219,14 @@ class ContinuityTracker:
         ``decision`` is a ``TurnDecision`` (imported lazily by the caller to avoid a cycle);
         we only read ``intent``, ``caller_question`` and ``answer_value`` off it.
         """
-        # A "what next?" / "it didn't work" continuation must NEVER become the topic (the live
-        # bug where "What to do then?" overwrote the issue and the thread was lost).
-        thread = is_followup_fragment(transcript) or is_continuation(transcript)
+        # A "what next?" / "it didn't work" continuation or a repair ("what?", "help me") must
+        # NEVER become the topic (the live bug where "What to do then?" overwrote the issue).
+        thread = (
+            is_followup_fragment(transcript)
+            or is_continuation(transcript)
+            or is_repair(transcript)
+            or refers_back(transcript)
+        )
         new_issue = (decision.caller_question or "").strip()
         if new_issue and not thread:
             state.active_topic = new_issue
@@ -206,10 +247,11 @@ class ContinuityTracker:
             return
         if text.rstrip().endswith("?"):
             state.last_assistant_question = text
-        # A grounded, non-question reply is a concrete suggested step the caller may later
-        # report as failed. Only capture grounded replies (with citations) so conversational
-        # glue (acks, clarifying questions) is not mistaken for a documented step.
-        elif citations:
+        # Any grounded reply (with citations) is a step we've now COVERED — track it even when it
+        # ends with a question, so the agent advances to a new step instead of re-suggesting one
+        # it already gave (the live "go in circles around Task Manager" loop). Conversational glue
+        # (acks, clarifying questions with no citation) is not a documented step, so it's skipped.
+        if citations:
             _append_capped(state.suggested_steps, text, _MAX_STEPS)
         for source in citations:
             _append_capped(state.recent_sources, source, _MAX_SOURCES)
@@ -233,27 +275,24 @@ class ContinuityTracker:
         problem should not drag in slow-laptop keywords.
         """
         current = (decision.caller_question or decision.answer_value or transcript).strip()
-        thread = is_followup_fragment(transcript) or is_continuation(transcript)
-
-        previous_turns = state.transcript[:-1]  # current user turn was just appended
-        previous_users = [
-            str(t["text"]) for t in previous_turns if t.get("role") == "user" and t.get("text")
-        ][-2:]
+        repair = is_repair(transcript)
+        thread = repair or is_followup_fragment(transcript) or is_continuation(transcript)
+        # The document the agent is already working from (its most recent citation, humanized) —
+        # the single strongest anchor to keep retrieval on the same procedure.
+        recent_source = next(
+            (s.replace(".md", "").replace("_", " ") for s in reversed(state.recent_sources)), ""
+        )
 
         ordered: list[str] = []
-        # For a thread turn (terse or "then what"), lead with the remembered topic so the query
-        # isn't just "yes"/"then what".
         if state.active_topic and (thread or state.active_topic.lower() not in current.lower()):
             ordered.append(state.active_topic)
-        ordered.append(current or transcript)
-        if thread:
-            # Keep the SAME procedure: the caller's own recent words + the document the agent is
-            # already working from (its recent citations, humanized). NOT the agent's whole
-            # verbose reply, which bloated and drifted the query in the live run.
-            ordered.extend(previous_users)
-            ordered.extend(
-                s.replace(".md", "").replace("_", " ") for s in state.recent_sources[-2:]
-            )
+        # A repair turn ("what?", "help me", "say it simply") carries no search value of its own,
+        # so we search the topic + the doc in play — never the vague words (which polluted the
+        # query and made retrieval loop on the same generic chunk).
+        if not repair:
+            ordered.append(current or transcript)
+        if thread and recent_source:
+            ordered.append(recent_source)
 
         seen: set[str] = set()
         clean: list[str] = []
@@ -299,28 +338,57 @@ class ContinuityTracker:
             parts.append(
                 "Steps already tried without success: " + "; ".join(state.failed_steps)
             )
+        # Progress tracker: the steps already given, so the agent ADVANCES to a new one instead
+        # of circling back to a covered step or falsely claiming one is done.
+        if state.suggested_steps:
+            covered = "; ".join(f'"{s}"' for s in state.suggested_steps)
+            parts.append(
+                "Steps you have ALREADY given the caller (do NOT repeat any of these; pick a "
+                f"genuinely DIFFERENT next step, and never go back to an earlier one): {covered}"
+            )
         hints = self._matched_hints(searchable)
         if hints:
             parts.append(f"Relevant KB search hints: {' | '.join(hints)}")
         if self._continuity_prompt:
             parts.append(self._continuity_prompt)
-        # The caller just said "yes / go ahead" to a question or offer the agent made -> confirm
-        # and move on; do NOT repeat the same offer (the live escalation loop).
-        if last_assistant.rstrip().endswith("?") and is_affirmation(transcript):
+
+        # Situation-specific instruction about the caller's LAST turn: repair (didn't understand)
+        # -> simplify the CURRENT step; acceptance/answer (said yes / gave the info) -> act on it;
+        # otherwise -> never repeat your last line.
+        if is_repair(transcript) and last_assistant:
             parts.append(
-                "The caller has just AGREED to what you proposed. Confirm it is being handled, "
-                "do NOT repeat the same offer or question, and then ask if there is anything else."
+                "The caller did NOT understand your previous message, or wants you to do it "
+                f"WITH them. Your previous message was: \"{last_assistant}\". Do NOT repeat it and "
+                "do NOT jump back to an earlier step. Re-explain THIS SAME step far more simply: "
+                "give ONLY the very first concrete action to take right now, in one short plain "
+                "sentence, and ask them to tell you when it's done."
             )
+        elif last_assistant.rstrip().endswith("?") and (
+            is_affirmation(transcript) or decision.intent is TurnIntent.ANSWER
+        ):
+            parts.append(
+                "The caller has just answered or agreed to your last question. ACT on their "
+                "answer and move forward — do NOT ask them to confirm what they just told you, "
+                "and do NOT repeat the question."
+            )
+        elif last_assistant:
+            parts.append(
+                f"You already said: \"{last_assistant}\". Do NOT repeat it or reword it — either "
+                "give the NEXT step, or break the current step into a simpler sub-step."
+            )
+
         guidance = (
-            "This is a continuing conversation — build on what was already said; do not start "
-            "over or repeat your opening line, and do not repeat an offer the caller already "
-            "answered. Briefly acknowledge the caller's last message without assuming or inventing "
-            "anything they did not actually say, then give the single next step from the retrieved "
-            "passages. Do not re-ask anything they have already answered, and once you have enough "
-            "to act, prefer a concrete next step over another clarifying question. If a step was "
-            "already tried, move to the NEXT step in the passages — never invent one. If the "
-            "passages do not cover it, do not say so literally; offer to escalate or have a human "
-            "follow up."
+            "Reply the way a calm, competent human agent would on a call. Do NOT echo or restate "
+            "what the caller just said, and do NOT narrate your sources — never say \"according "
+            "to\", \"the guide\", \"the document\", \"the procedure\", \"the knowledge base\", "
+            "\"as I mentioned\", or \"as I said\". You CANNOT do anything on the caller's device "
+            "or account yourself — never claim you did something (\"I've done\", \"I've gone "
+            "ahead\", \"I've reset it\"); ask the caller to do each step and tell you the result. "
+            "Give one clear next step or one short question in your own natural words, then stop. "
+            "Don't start over or repeat a step already covered above. If a step was tried and "
+            "failed, continue with the NEXT step — never invent one. If the caller goes off-topic, "
+            "briefly say you can only help with their issue, then continue from the CURRENT step. "
+            "If nothing is left to try, offer to escalate or have a human follow up."
         )
         if self._escalation_wording:
             guidance += f" Escalation wording to use if needed: {self._escalation_wording}"
