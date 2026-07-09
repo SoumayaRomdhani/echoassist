@@ -30,8 +30,8 @@ export function AgentDetailPage({ onOpenCall }: { onOpenCall: (callId: string) =
             <Badge variant="ready">Ready</Badge>
           </div>
           <p className="mt-1 max-w-2xl text-sm leading-relaxed text-muted">
-            Autonomous voice agent for structured candidate screening — grounded answers, structured
-            notes, and faithful post-call summaries.
+            Autonomous voice agent — grounded answers, structured notes, and faithful post-call
+            summaries.
           </p>
         </div>
       </div>
@@ -69,7 +69,7 @@ function CallsTab({
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h2 className="font-display text-lg font-semibold">Screening calls</h2>
+          <h2 className="font-display text-lg font-semibold capitalize">{domain} calls</h2>
           <p className="text-sm text-muted">
             Every call with its live transcript, structured notes, summary, and consent record.
           </p>

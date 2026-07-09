@@ -229,39 +229,45 @@ async def _run_interview(
     await _say(transport, "AGENT:", question_text, question_audio)
 
     turn_id = 0
-    while True:
-        turn_id += 1
-        print(dim("\n[listening…]"))
-        # record_turn is a no-op unless LATENCY_LOGGING=true (adds nothing otherwise).
-        with latency.record_turn(
-            settings.data_dir, turn_id=turn_id, **latency.config_fields(settings)
-        ):
-            # Streaming turn (LLM->TTS): the agent starts speaking at the first chunk instead
-            # of after the whole reply. send_stream_interruptible keeps barge-in working and
-            # drains the stream so the turn is recorded even when interrupted. (Citations are
-            # stripped before TTS; the answer is still grounded — sources live in the notes.)
-            transcript, is_rag, audio_stream = await pipeline.interview_turn_streaming(
-                transport.listen()
-            )
-            print(f"\n{bold('CALLER:')} {transcript or '(silence)'}")
-            # Cover a slow *grounded* turn with a filler; slot answers / meta go straight through.
-            use_filler = (
-                filler is not None and filler.ready
-                and (is_rag or not settings.filler_only_for_rag)
-            )
-            if use_filler:
-                barged = await _play_with_filler(
-                    transport, audio_stream, filler.next_chunk, filler.delay_s
+    try:
+        while True:
+            turn_id += 1
+            print(dim("\n[listening…]"))
+            # record_turn is a no-op unless LATENCY_LOGGING=true (adds nothing otherwise).
+            with latency.record_turn(
+                settings.data_dir, turn_id=turn_id, **latency.config_fields(settings)
+            ):
+                # Streaming turn (LLM->TTS): the agent starts speaking at the first chunk instead
+                # of after the whole reply. send_stream_interruptible keeps barge-in working and
+                # drains the stream so the turn is recorded even when interrupted. (Citations are
+                # stripped before TTS; the answer is still grounded — sources live in the notes.)
+                transcript, is_rag, audio_stream = await pipeline.interview_turn_streaming(
+                    transport.listen()
                 )
-            else:
-                barged = await transport.send_stream_interruptible(audio_stream)
-            print(f"{bold('AGENT:')} {_last_agent_line(state)}")
-            if barged:
-                print(dim("  [barge-in — the caller talked over the agent]"))
-        if pipeline.interview_finished:
-            break
-
-    await _finalize(settings, llm, state)
+                print(f"\n{bold('CALLER:')} {transcript or '(silence)'}")
+                # Cover a slow *grounded* turn with a filler; slot answers / meta go straight thru.
+                use_filler = (
+                    filler is not None and filler.ready
+                    and (is_rag or not settings.filler_only_for_rag)
+                )
+                if use_filler:
+                    barged = await _play_with_filler(
+                        transport, audio_stream, filler.next_chunk, filler.delay_s
+                    )
+                else:
+                    barged = await transport.send_stream_interruptible(audio_stream)
+                print(f"{bold('AGENT:')} {_last_agent_line(state)}")
+                if barged:
+                    print(dim("  [barge-in — the caller talked over the agent]"))
+            if pipeline.interview_finished:
+                break
+    finally:
+        # Persist on *any* end of call, not just a deterministic close. A caller-led
+        # (help-desk) call usually ends by hanging up — Ctrl-C, a dropped line — rather
+        # than a recognised closing phrase, and a slot flow can be abandoned mid-way; in
+        # both cases the loop exits without `interview_finished`. Finalizing here (instead
+        # of only after a clean break) is what makes those calls reach the dashboard.
+        await _finalize(settings, llm, state, completed=pipeline.interview_finished)
 
 
 def _last_agent_line(state: ConversationState) -> str:
@@ -272,9 +278,20 @@ def _last_agent_line(state: ConversationState) -> str:
     return ""
 
 
-async def _finalize(settings: Settings, llm: LLMProvider, state: ConversationState) -> None:
-    """Extract structured notes + a grounded summary and persist them to Postgres."""
-    print(bold("\n--- Interview complete ---"))
+async def _finalize(
+    settings: Settings, llm: LLMProvider, state: ConversationState, *, completed: bool
+) -> None:
+    """Extract structured notes + a grounded summary and persist them to Postgres.
+
+    ``completed`` says whether the call reached a deterministic close (all slots filled
+    or a recognised closing phrase) or ended early (hang-up / abandoned); it becomes the
+    persisted call ``status``. A call where the caller never spoke has nothing worth
+    persisting, so it's skipped.
+    """
+    print(bold("\n--- Interview complete ---" if completed else "\n--- Call ended ---"))
+    if not any(turn["role"] == "user" for turn in state.transcript):
+        print(dim("Nothing to persist — no caller turns recorded."))
+        return
     print(f"{bold('Filled slots:')}")
     for slot, value in state.slots.items():
         print(f"  {slot}: {value}")
@@ -287,6 +304,7 @@ async def _finalize(settings: Settings, llm: LLMProvider, state: ConversationSta
             final = await finalize_call(
                 session, state, llm=llm, schema=schema,
                 campaign_name=settings.default_campaign, domain=settings.domain,
+                status="completed" if completed else "incomplete",
                 redact=settings.redact_pii,
             )
         print(f"\n{bold('Notes (persisted):')}")

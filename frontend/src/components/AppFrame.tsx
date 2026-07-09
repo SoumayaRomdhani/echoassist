@@ -18,7 +18,14 @@ import {
  * A slim top bar — EchoAssist brand, backend health, theme, and the signed-in
  * user menu — wrapping the embeddable agent. It is deliberately not a marketplace.
  */
-export function AppFrame({ children }: { children: ReactNode }) {
+export function AppFrame({
+  children,
+  headerSlot,
+}: {
+  children: ReactNode
+  /** Optional control rendered in the top bar (e.g. the domain switcher). */
+  headerSlot?: ReactNode
+}) {
   const { user, signOut } = useAuth()
   const initial = (user?.name?.[0] ?? 'M').toUpperCase()
 
@@ -35,6 +42,7 @@ export function AppFrame({ children }: { children: ReactNode }) {
           </div>
 
           <div className="flex items-center gap-3">
+            {headerSlot}
             <ReadinessIndicator />
             <ThemeToggle />
             <DropdownMenu>

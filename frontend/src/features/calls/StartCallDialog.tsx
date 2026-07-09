@@ -45,14 +45,14 @@ export function StartCallDialog({
       <DialogTrigger asChild>
         <Button variant="brand">
           <PhoneCall className="size-4" />
-          Start screening call
+          Start call
         </Button>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Start a screening call</DialogTitle>
+          <DialogTitle>Start a call</DialogTitle>
           <DialogDescription>
-            Runs a replay-driven screening interview on the{' '}
+            Runs a replay-driven interview on the{' '}
             <span className="font-medium text-foreground">{domain}</span> domain and streams every
             turn live.
           </DialogDescription>
