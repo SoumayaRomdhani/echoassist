@@ -33,12 +33,13 @@ export function DocumentUpload({ domain }: { domain: string }) {
         Add a document to the knowledge base
       </p>
       <p className="mt-1 text-xs text-muted">
-        Markdown or plain text. The domain collection re-indexes immediately.
+        Markdown, plain text, PDF, Word (.docx), or HTML. The domain collection re-indexes
+        immediately.
       </p>
       <input
         ref={inputRef}
         type="file"
-        accept=".md,.txt,text/markdown,text/plain"
+        accept=".md,.markdown,.txt,.pdf,.docx,.html,.htm,text/markdown,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/html"
         className="hidden"
         onChange={(event) => handleFile(event.target.files?.[0])}
       />

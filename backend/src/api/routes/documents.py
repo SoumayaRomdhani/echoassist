@@ -22,7 +22,11 @@ async def upload_document(
     file: UploadFile = File(...),
     resources: AppResources = Depends(get_resources),
 ) -> DocumentUploadOut:
-    """Store an uploaded ``.md``/``.txt`` document and re-index the domain collection."""
+    """Store an uploaded knowledge-base document and re-index the domain collection.
+
+    Accepts Markdown, plain text, PDF, Word (.docx), and HTML (see
+    ``rag.loaders.SUPPORTED_SUFFIXES``); unsupported types are rejected with 400.
+    """
     if domain not in list_available_domains(resources.settings.config_dir):
         raise HTTPException(status_code=404, detail=f"domain '{domain}' not found")
 

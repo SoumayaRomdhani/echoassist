@@ -16,10 +16,10 @@ from collections.abc import Callable
 from pathlib import Path
 
 from src.rag.ingest import IngestReport, ingest
+from src.rag.loaders import SUPPORTED_SUFFIXES
 
 log = logging.getLogger("echoassist.api.ingest")
 
-_SUPPORTED_SUFFIXES = {".md", ".txt"}
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
 # (docs_dir, domain) -> report. Defaults to the real FastEmbed/Qdrant pipeline.
@@ -50,10 +50,10 @@ class IngestService:
         name = _SAFE_NAME.sub("_", Path(filename).name).strip("._")
         if not name:
             raise UnsupportedDocument("empty or invalid filename")
-        if Path(name).suffix.lower() not in _SUPPORTED_SUFFIXES:
+        if Path(name).suffix.lower() not in SUPPORTED_SUFFIXES:
             raise UnsupportedDocument(
                 f"unsupported file type '{Path(name).suffix}'; allowed: "
-                f"{', '.join(sorted(_SUPPORTED_SUFFIXES))}"
+                f"{', '.join(sorted(SUPPORTED_SUFFIXES))}"
             )
         return name
 

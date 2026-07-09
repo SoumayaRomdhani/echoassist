@@ -31,7 +31,14 @@ tts-elevenlabs = ["elevenlabs>=2.0"]           # paid TTS drop-in (Sprint 8 Path
 # RAG core (Sprint 2): hybrid embeddings + reranker (FastEmbed) + vector DB (Qdrant).
 # fastembed is PINNED: model pooling/results can change between minor versions
 # (e.g. CLS vs mean pooling), so reproducibility requires an exact version.
-rag = ["qdrant-client>=1.12", "fastembed==0.8.0"]
+rag = [
+    "qdrant-client>=1.12",
+    "fastembed==0.8.0",
+    # Document loaders (src/rag/loaders.py): PDF, Word, and HTML knowledge-base files.
+    "pypdf>=4.0",
+    "python-docx>=1.1",
+    "beautifulsoup4>=4.12",
+]
 rerank-voyage = ["voyageai>=0.3"]              # paid reranker drop-in — offloads CPU rerank to Voyage
 # Telephony (Sprint 8 Path B): LiveKit room transport (WebRTC loopback) + SIP/PSTN.
 # livekit = realtime SDK (rtc.Room/AudioStream/AudioSource); livekit-api = join tokens.
@@ -79,6 +86,9 @@ all = [
     "livekit-api>=1.0",
     "qdrant-client>=1.12",
     "fastembed==0.8.0",
+    "pypdf>=4.0",
+    "python-docx>=1.1",
+    "beautifulsoup4>=4.12",
     "voyageai>=0.3",
     "redis>=5.0",
     "sqlalchemy[asyncio]>=2.0",

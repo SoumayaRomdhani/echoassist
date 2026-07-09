@@ -13,12 +13,17 @@ from pathlib import Path
 from src.observability.tracing import span
 from src.rag.chunking import chunk_text
 from src.rag.embeddings import HybridEmbedder
+from src.rag.loaders import SUPPORTED_SUFFIXES, DocumentLoadError, DocumentSection, extract
 from src.rag.types import Chunk, EmbeddedChunk
 from src.rag.vectorstore import VectorStore
 
 log = logging.getLogger("echoassist.rag.ingest")
 
-_SUPPORTED_SUFFIXES = {".md", ".txt"}
+
+@dataclass(frozen=True, slots=True)
+class LoadedDocument:
+    source: str
+    sections: list[DocumentSection]
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,29 +33,53 @@ class IngestReport:
     collection_count: int
 
 
-def load_documents(docs_dir: Path) -> list[tuple[str, str]]:
-    """Return (source_name, text) for every supported document under ``docs_dir``."""
+def load_documents(docs_dir: Path) -> list[LoadedDocument]:
+    """Extract every supported document under ``docs_dir`` into provenance-tagged sections.
+
+    A file that cannot be parsed (corrupt PDF, missing text layer) is logged and
+    skipped rather than aborting the whole domain ingest.
+    """
     if not docs_dir.exists():
         raise FileNotFoundError(f"Domain docs directory not found: {docs_dir}")
-    docs: list[tuple[str, str]] = []
+    docs: list[LoadedDocument] = []
     for path in sorted(docs_dir.rglob("*")):
-        if path.is_file() and path.suffix.lower() in _SUPPORTED_SUFFIXES:
-            text = path.read_text(encoding="utf-8").strip()
-            if text:
-                docs.append((path.name, text))
+        if not (path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES):
+            continue
+        try:
+            sections = [s for s in extract(path) if s.text.strip()]
+        except DocumentLoadError as exc:
+            log.warning("skipping %s: %s", path.name, exc)
+            continue
+        if sections:
+            docs.append(LoadedDocument(source=path.name, sections=sections))
     return docs
 
 
 def build_chunks(
-    docs: list[tuple[str, str]], *, chunk_size: int, chunk_overlap: int
+    docs: list[LoadedDocument], *, chunk_size: int, chunk_overlap: int
 ) -> list[Chunk]:
+    """Chunk each document's sections, carrying section provenance onto every chunk.
+
+    A chunk never crosses a section boundary, so each one inherits exactly one
+    ``page`` / ``heading_path`` (kept in ``Chunk.metadata`` for citations).
+    """
     chunks: list[Chunk] = []
-    for source, text in docs:
-        pieces = chunk_text(text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-        for ordinal, piece in enumerate(pieces):
-            chunks.append(
-                Chunk(id=f"{source}#{ordinal}", source=source, text=piece, ordinal=ordinal)
-            )
+    for doc in docs:
+        ordinal = 0
+        for section in doc.sections:
+            metadata = section.metadata()
+            pieces = chunk_text(section.text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+            for piece in pieces:
+                chunks.append(
+                    Chunk(
+                        id=f"{doc.source}#{ordinal}",
+                        source=doc.source,
+                        text=piece,
+                        ordinal=ordinal,
+                        metadata=dict(metadata),
+                    )
+                )
+                ordinal += 1
     return chunks
 
 
