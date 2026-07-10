@@ -12,6 +12,7 @@ from src.rag.loaders import (
     UnsupportedDocumentType,
     extract,
 )
+from src.rag.metadata import DocumentMeta
 
 
 # --- text / markdown ------------------------------------------------------- #
@@ -113,10 +114,22 @@ def test_load_documents_skips_unsupported_and_empty(tmp_path: Path) -> None:
     assert [d.source for d in docs] == ["good.md"]
 
 
+def _fake_doc_meta(source: str = "guide.pdf") -> DocumentMeta:
+    return DocumentMeta(
+        doc_id="doc-1",
+        source=source,
+        mime_type="application/pdf",
+        content_hash="abc123",
+        size_bytes=42,
+        modified_at="2026-07-10T00:00:00+00:00",
+        indexed_at="2026-07-10T00:00:00+00:00",
+    )
+
+
 def test_build_chunks_carries_page_and_heading_metadata() -> None:
     docs = [
         LoadedDocument(
-            source="guide.pdf",
+            meta=_fake_doc_meta(),
             sections=[
                 DocumentSection(text="Alpha on page one.", page=1),
                 DocumentSection(
@@ -126,7 +139,14 @@ def test_build_chunks_carries_page_and_heading_metadata() -> None:
         )
     ]
     chunks = build_chunks(docs, chunk_size=200, chunk_overlap=20)
-    assert chunks[0].metadata == {"page": 1}
-    assert chunks[1].metadata == {"heading_path": ["Setup", "Login"]}
+
+    # Section provenance lands per chunk...
+    assert chunks[0].metadata["page"] == 1
+    assert chunks[1].metadata["heading_path"] == ["Setup", "Login"]
+    assert chunks[1].metadata["heading"] == "Setup > Login"
+    # ...alongside the shared document facts and per-chunk size.
+    assert chunks[0].metadata["doc_id"] == "doc-1"
+    assert chunks[0].metadata["content_hash"] == "abc123"
+    assert chunks[0].metadata["char_count"] == len("Alpha on page one.")
     # Ordinals run per-document across sections; ids stay deterministic.
     assert [c.id for c in chunks] == ["guide.pdf#0", "guide.pdf#1"]

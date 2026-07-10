@@ -13,8 +13,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from src.rag.chunking import chunk_text
+from src.rag.ingest import LoadedDocument, build_chunks
 from src.rag.loaders import extract
+from src.rag.metadata import DocumentMeta
 
 
 def main() -> None:
@@ -26,23 +27,28 @@ def main() -> None:
     args = parser.parse_args()
 
     sections = [s for s in extract(args.path) if s.text.strip()]
-    print(f"\n{args.path.name}: {len(sections)} section(s)\n" + "-" * 60)
+    doc = LoadedDocument(meta=DocumentMeta.describe(args.path), sections=sections)
+    chunks = build_chunks(
+        [doc], chunk_size=args.chunk_size, chunk_overlap=args.chunk_overlap
+    )
 
-    total_chunks = 0
-    for i, section in enumerate(sections):
-        prov = section.metadata() or "(no page/heading)"
-        preview = section.text if args.full else section.text[:120].replace("\n", " ")
-        print(f"\n[section {i}] {prov}\n  {preview}{'' if args.full else '...'}")
-        pieces = chunk_text(
-            section.text, chunk_size=args.chunk_size, chunk_overlap=args.chunk_overlap
-        )
-        total_chunks += len(pieces)
-        for j, piece in enumerate(pieces):
-            body = piece if args.full else piece[:90].replace("\n", " ")
-            print(f"    chunk {j}: {len(piece):4d} chars  {body}{'' if args.full else '...'}")
+    print(f"\n{args.path.name}\n" + "-" * 60)
+    for key, value in doc.meta.as_dict().items():
+        print(f"  {key:15} {value}")
+    print("-" * 60)
+
+    for chunk in chunks:
+        page = chunk.metadata.get("page")
+        heading = chunk.metadata.get("heading")
+        prov = " · ".join(
+            part for part in (f"p{page}" if page else "", heading or "") if part
+        ) or "(no page/heading)"
+        body = chunk.text if args.full else chunk.text[:90].replace("\n", " ")
+        print(f"\n  {chunk.id}  [{prov}]  {chunk.metadata['char_count']} chars")
+        print(f"    {body}{'' if args.full else '...'}")
 
     print("\n" + "-" * 60)
-    print(f"{len(sections)} section(s) -> {total_chunks} chunk(s)\n")
+    print(f"{len(sections)} section(s) -> {len(chunks)} chunk(s)\n")
 
 
 if __name__ == "__main__":

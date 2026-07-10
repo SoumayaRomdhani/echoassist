@@ -14,6 +14,7 @@ from src.observability.tracing import span
 from src.rag.chunking import chunk_text
 from src.rag.embeddings import HybridEmbedder
 from src.rag.loaders import SUPPORTED_SUFFIXES, DocumentLoadError, DocumentSection, extract
+from src.rag.metadata import DocumentMeta, build_chunk_metadata, utc_iso
 from src.rag.types import Chunk, EmbeddedChunk
 from src.rag.vectorstore import VectorStore
 
@@ -22,8 +23,12 @@ log = logging.getLogger("echoassist.rag.ingest")
 
 @dataclass(frozen=True, slots=True)
 class LoadedDocument:
-    source: str
+    meta: DocumentMeta
     sections: list[DocumentSection]
+
+    @property
+    def source(self) -> str:
+        return self.meta.source
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +46,8 @@ def load_documents(docs_dir: Path) -> list[LoadedDocument]:
     """
     if not docs_dir.exists():
         raise FileNotFoundError(f"Domain docs directory not found: {docs_dir}")
+    # One timestamp for the whole run, so every document shares a consistent indexed_at.
+    indexed_at = utc_iso()
     docs: list[LoadedDocument] = []
     for path in sorted(docs_dir.rglob("*")):
         if not (path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES):
@@ -51,32 +58,35 @@ def load_documents(docs_dir: Path) -> list[LoadedDocument]:
             log.warning("skipping %s: %s", path.name, exc)
             continue
         if sections:
-            docs.append(LoadedDocument(source=path.name, sections=sections))
+            meta = DocumentMeta.describe(path, indexed_at=indexed_at)
+            docs.append(LoadedDocument(meta=meta, sections=sections))
     return docs
 
 
 def build_chunks(
     docs: list[LoadedDocument], *, chunk_size: int, chunk_overlap: int
 ) -> list[Chunk]:
-    """Chunk each document's sections, carrying section provenance onto every chunk.
+    """Chunk each document's sections, carrying rich provenance onto every chunk.
 
     A chunk never crosses a section boundary, so each one inherits exactly one
-    ``page`` / ``heading_path`` (kept in ``Chunk.metadata`` for citations).
+    ``page`` / ``heading_path`` plus its document's facts (doc_id, content_hash,
+    timestamps, ...) — all kept in ``Chunk.metadata`` for citations and lifecycle.
     """
     chunks: list[Chunk] = []
     for doc in docs:
         ordinal = 0
         for section in doc.sections:
-            metadata = section.metadata()
+            section_meta = section.metadata()
             pieces = chunk_text(section.text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
             for piece in pieces:
+                metadata = build_chunk_metadata(doc.meta, section_meta, char_count=len(piece))
                 chunks.append(
                     Chunk(
                         id=f"{doc.source}#{ordinal}",
                         source=doc.source,
                         text=piece,
                         ordinal=ordinal,
-                        metadata=dict(metadata),
+                        metadata=metadata,
                     )
                 )
                 ordinal += 1
