@@ -1,7 +1,6 @@
 # EchoAssist
 
-EchoAssist is a provider-agnostic, multi-domain autonomous voice agent for the
-ACTEEK Agent Marketplace. It conducts structured, interview-style phone
+EchoAssist is a provider-agnostic, multi-domain autonomous voice agent. It conducts structured, call-style phone
 conversations: it speaks an AI disclosure, gates on the caller's consent,
 transcribes speech, grounds its answers in domain documentation (RAG), fills a
 structured set of fields as the conversation progresses, and produces a

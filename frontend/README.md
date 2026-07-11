@@ -1,44 +1,7 @@
-# EchoAssist Dashboard (Sprint 7)
+# EchoAssist Dashboard 
 
-A thin, on-brand React dashboard for **EchoAssist** inside the **ACTEEK Agent
-Marketplace**. A recruiter can run and inspect screening calls — live transcript,
-structured notes, post-call summary, consent audit trail — wired to the FastAPI
-backend over REST (TanStack Query) and the live WebSocket.
 
-Built per `ARCHITECTURE.md` §8 / `ROADMAP.md` §7: React + Vite + TypeScript,
-Tailwind CSS v4 mapped to the ACTEEK `--c-*` tokens, shadcn/ui-style primitives on
-Radix, Space Grotesk + Manrope, **dark-mode first** with a light toggle.
 
-## What's the deliverable vs. the demo
-
-The **deliverable is the agent**, not a whole app. ACTEEK already owns the
-marketplace, sidebar, theme, and SSO — they just **embed** your agent:
-
-```tsx
-import { EchoAssistAgent } from './embed' // src/embed/index.ts is the public surface
-
-<EchoAssistAgent
-  config={{
-    apiBaseUrl: 'https://api.acteek.com/echoassist',
-    getAuthToken: () => acteekSession.accessToken, // their SSO token
-    domain: 'screening',
-  }}
-/>
-```
-
-`<EchoAssistAgent>` ([src/embed/](src/embed/EchoAssistAgent.tsx)) is self-contained:
-its own TanStack Query client + tooltip host, list↔detail driven by **local state
-(no router)** so it works under any host routing and never touches the host URL.
-It renders **only** the agent workspace (calls, live transcript, notes, summary,
-consent, metrics, domain config). It inherits the theme from the host's
-`[data-theme]` via the shared `--c-*` tokens.
-
-Running this project standalone (`npm run dev`) gives a small **demo host** around the
-agent: a login (dev SSO stub) + a slim branded top bar (theme toggle, backend-health
-pill, account menu). That host is **not** the deliverable — it only exists so you can run
-and present the agent on its own. The signed-in session's token is handed to the agent via
-`config.getAuthToken`, exactly where **ACTEEK's SSO token** goes when they embed it. ACTEEK
-provides their own marketplace + shell + SSO (ARCHITECTURE.md §2 — *don't rebuild ACTEEK auth*).
 
 ## Prerequisites
 
@@ -108,13 +71,11 @@ src/
 
 ## Notes
 
-- **Auth**: ARCHITECTURE.md §2 — *do not rebuild ACTEEK auth*. The agent never logs in;
-  it just calls `config.getAuthToken()` (ACTEEK's SSO token) and sends it as
-  `Authorization: Bearer` on REST + the `access_token` WS query param.
+
 - **Live transport**: `useCallEvents` uses a native `WebSocket` against the backend,
   or the in-browser scripted transport when mocks are on. The live-event fold
   (`src/lib/ws.ts`) is pure and unit-tested.
-- **Out of scope (Sprint 7 follow-ups)**: the reproducible benchmark report (latency
+- **Out of scope (follow-ups)**: the reproducible benchmark report (latency
   p50/p95, WER, Recall@K / nDCG, note accuracy, summary faithfulness) — surfaced as a
-  note on the Metrics tab; real ACTEEK OAuth; PDF/DOCX upload (md/txt by design).
+  note on the Metrics tab;
 ```
