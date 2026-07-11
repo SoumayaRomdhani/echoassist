@@ -78,12 +78,20 @@ class DocumentMeta:
     parser_version: str = PARSER_VERSION
 
     @classmethod
-    def describe(cls, path: Path, *, indexed_at: str | None = None) -> DocumentMeta:
-        """Read ``path`` and capture its document-level provenance."""
+    def describe(
+        cls, path: Path, *, source: str | None = None, indexed_at: str | None = None
+    ) -> DocumentMeta:
+        """Read ``path`` and capture its document-level provenance.
+
+        ``source`` is the document's identity within its domain — pass the path relative
+        to the docs dir (e.g. ``a/faq.md``) so files with the same name in different
+        folders get distinct ``source`` and ``doc_id``. Defaults to the bare filename.
+        """
         data = path.read_bytes()
+        src = source or path.name
         return cls(
-            doc_id=doc_id_for(path.name),
-            source=path.name,
+            doc_id=doc_id_for(src),
+            source=src,
             mime_type=mime_type_for(path.suffix),
             content_hash=sha256_hex(data),
             size_bytes=len(data),

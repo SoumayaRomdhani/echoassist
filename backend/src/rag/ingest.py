@@ -68,14 +68,17 @@ def load_documents(docs_dir: Path) -> LoadResult:
     for path in sorted(docs_dir.rglob("*")):
         if not (path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES):
             continue
-        attempted.append(path.name)
+        # Identity is the path relative to the docs dir (POSIX), so a/faq.md and
+        # b/faq.md don't collide into one source / chunk-id namespace.
+        source = path.relative_to(docs_dir).as_posix()
+        attempted.append(source)
         try:
             sections = [s for s in extract(path) if s.text.strip()]
         except DocumentLoadError as exc:
-            log.warning("skipping %s: %s", path.name, exc)
+            log.warning("skipping %s: %s", source, exc)
             continue
         if sections:
-            meta = DocumentMeta.describe(path, indexed_at=indexed_at)
+            meta = DocumentMeta.describe(path, source=source, indexed_at=indexed_at)
             docs.append(LoadedDocument(meta=meta, sections=sections))
     return LoadResult(documents=docs, attempted_sources=attempted)
 

@@ -43,6 +43,15 @@ def test_describe_captures_document_facts(tmp_path: Path) -> None:
     assert meta.parser_version  # non-empty
 
 
+def test_describe_uses_relative_source_for_identity(tmp_path: Path) -> None:
+    path = tmp_path / "faq.md"
+    path.write_text("body", encoding="utf-8")
+    meta = DocumentMeta.describe(path, source="hr/faq.md")
+    assert meta.source == "hr/faq.md"
+    assert meta.doc_id == doc_id_for("hr/faq.md")
+    assert meta.doc_id != doc_id_for("faq.md")   # folder disambiguates same-named files
+
+
 def test_build_chunk_metadata_merges_and_adds_breadcrumb() -> None:
     doc = DocumentMeta(
         doc_id="d1", source="hr.docx", mime_type="x", content_hash="h",

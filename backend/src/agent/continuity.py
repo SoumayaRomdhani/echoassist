@@ -26,6 +26,7 @@ tune it purely through optional YAML (`retrieval_hints`, `continuity_prompt`,
 from __future__ import annotations
 
 import re
+from pathlib import PurePosixPath
 
 from src.agent.domain import DomainConfig
 from src.agent.state import ConversationState
@@ -326,9 +327,10 @@ class ContinuityTracker:
         repair = is_repair(transcript)
         thread = repair or is_followup_fragment(transcript) or is_continuation(transcript)
         # The document the agent is already working from (its most recent citation, humanized) —
-        # the single strongest anchor to keep retrieval on the same procedure.
+        # the single strongest anchor to keep retrieval on the same procedure. Use the file
+        # stem so a folder path ("hr/faq.md") or any extension (.pdf/.docx) humanizes cleanly.
         recent_source = next(
-            (s.replace(".md", "").replace("_", " ") for s in reversed(state.recent_sources)), ""
+            (PurePosixPath(s).stem.replace("_", " ") for s in reversed(state.recent_sources)), ""
         )
 
         ordered: list[str] = []

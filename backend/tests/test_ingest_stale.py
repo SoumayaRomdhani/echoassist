@@ -153,3 +153,22 @@ def test_embedding_failure_on_reingest_leaves_index_intact(tmp_path: Path) -> No
         ingest(tmp_path, FailingEmbedder(), store, chunk_size=40, chunk_overlap=5, recreate=False)
 
     assert set(store.points) == before  # nothing deleted, index still complete
+
+
+def test_same_filename_in_different_folders_do_not_collide(tmp_path: Path) -> None:
+    """a/faq.md and b/faq.md must index as distinct documents, not overwrite each other."""
+    store, embedder = FakeStore(), FakeEmbedder()
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    (tmp_path / "a" / "faq.md").write_text("Alpha answer about widgets.", "utf-8")
+    (tmp_path / "b" / "faq.md").write_text("Bravo answer about gadgets.", "utf-8")
+
+    ingest(tmp_path, embedder, store, chunk_size=200, chunk_overlap=20, recreate=True)
+
+    sources = {ec.chunk.source for ec in store.points.values()}
+    assert sources == {"a/faq.md", "b/faq.md"}          # relative-path identity, no collision
+    assert "a/faq.md#0" in store.points and "b/faq.md#0" in store.points
+    text = store.all_text()
+    assert "Alpha answer" in text and "Bravo answer" in text   # neither overwrote the other
+    doc_ids = {ec.chunk.metadata["doc_id"] for ec in store.points.values()}
+    assert len(doc_ids) == 2                            # distinct doc_ids too

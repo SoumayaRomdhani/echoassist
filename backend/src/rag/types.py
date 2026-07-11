@@ -22,7 +22,7 @@ class Chunk:
     """A unit of indexed text plus its provenance (used for citations)."""
 
     id: str
-    source: str           # document filename, e.g. "interview_process.md"
+    source: str           # path relative to the docs dir, e.g. "interview_process.md", "hr/faq.md"
     text: str
     ordinal: int          # position of this chunk within its document
     metadata: dict = field(default_factory=dict)
