@@ -14,7 +14,7 @@ from src.observability.tracing import span
 from src.rag.chunking import chunk_text
 from src.rag.embeddings import HybridEmbedder
 from src.rag.loaders import SUPPORTED_SUFFIXES, DocumentSection, extract
-from src.rag.metadata import DocumentMeta, build_chunk_metadata, utc_iso
+from src.rag.metadata import DocumentMeta, build_chunk_metadata, heading_breadcrumb, utc_iso
 from src.rag.types import Chunk, EmbeddedChunk
 from src.rag.vectorstore import VectorStore
 
@@ -108,13 +108,24 @@ def build_chunks(
     A chunk never crosses a section boundary, so each one inherits exactly one
     ``page`` / ``heading_path`` plus its document's facts (doc_id, content_hash,
     timestamps, ...) — all kept in ``Chunk.metadata`` for citations and lifecycle.
+    Each chunk's text is prefixed with its heading breadcrumb (``Setup > Login``) so it
+    embeds self-contained — the section context travels with every piece, which lifts
+    retrieval on short chunks that would otherwise lose the topic they belong to.
     """
     chunks: list[Chunk] = []
     for doc in docs:
         ordinal = 0
         for section in doc.sections:
             section_meta = section.metadata()
-            pieces = chunk_text(section.text, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+            breadcrumb = heading_breadcrumb(section.heading_path)
+            # The breadcrumb is prepended *inside* chunk_text, which reserves its length
+            # from the budget so the final chunk text still respects chunk_size.
+            pieces = chunk_text(
+                section.text,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                prefix=breadcrumb,
+            )
             for piece in pieces:
                 metadata = build_chunk_metadata(doc.meta, section_meta, char_count=len(piece))
                 chunks.append(

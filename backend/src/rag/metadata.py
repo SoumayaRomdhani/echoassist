@@ -23,7 +23,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 # Bump when extraction/chunking changes enough that indexes should be rebuilt.
-PARSER_VERSION = "1.0"
+# 1.1: heading-aware Markdown sections + structure-aware chunking + heading-breadcrumb prefix.
+PARSER_VERSION = "1.1"
 
 # Stable namespace so the same filename always maps to the same doc_id (lets the
 # lifecycle layer delete/replace a document's chunks by id).

@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from src.rag.metadata import (
+    PARSER_VERSION,
     DocumentMeta,
     build_chunk_metadata,
     doc_id_for,
@@ -72,3 +73,8 @@ def test_build_chunk_metadata_merges_and_adds_breadcrumb() -> None:
 def test_heading_breadcrumb() -> None:
     assert heading_breadcrumb(["A", "B", "C"]) == "A > B > C"
     assert heading_breadcrumb(()) == ""
+
+
+def test_parser_version_bumped_for_structure_aware_chunking() -> None:
+    # Extraction + chunking changed, so the version must move off "1.0" to force re-index.
+    assert PARSER_VERSION != "1.0"

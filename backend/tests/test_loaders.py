@@ -16,18 +16,40 @@ from src.rag.metadata import DocumentMeta
 
 
 # --- text / markdown ------------------------------------------------------- #
-def test_text_and_markdown_are_a_single_whole_document_section(tmp_path: Path) -> None:
-    md = tmp_path / "benefits.md"
-    md.write_text("# Benefits\n\nUnlimited coffee.\n\nAnd tea.", encoding="utf-8")
-    sections = extract(md)
-    assert len(sections) == 1
-    assert sections[0].page is None
-    assert sections[0].heading_path == ()
-    assert "Unlimited coffee." in sections[0].text
-    # .txt shares the same loader.
+def test_plain_text_is_a_single_whole_document_section(tmp_path: Path) -> None:
     txt = tmp_path / "note.txt"
     txt.write_text("plain body", encoding="utf-8")
     assert extract(txt) == [DocumentSection(text="plain body")]
+
+
+def test_markdown_is_heading_aware(tmp_path: Path) -> None:
+    md = tmp_path / "hr.md"
+    md.write_text(
+        "Intro before any heading.\n\n"
+        "# Benefits\n\nUnlimited coffee.\n\n"
+        "## Health\n\nFull coverage.\n\n"
+        "# Leave\n\nTake what you need.",
+        encoding="utf-8",
+    )
+    sections = extract(md)
+    by_path = {s.heading_path: s.text for s in sections}
+
+    assert by_path[()] == "Intro before any heading."          # pre-heading text kept
+    assert by_path[("Benefits",)] == "Unlimited coffee."
+    assert by_path[("Benefits", "Health")] == "Full coverage."  # nested breadcrumb
+    assert by_path[("Leave",)] == "Take what you need."         # sibling H1 pops the stack
+
+
+def test_markdown_ignores_headings_inside_code_fences(tmp_path: Path) -> None:
+    md = tmp_path / "guide.md"
+    md.write_text(
+        "# Real Heading\n\n```\n# not a heading, a shell comment\necho hi\n```\n\nAfter code.",
+        encoding="utf-8",
+    )
+    sections = extract(md)
+    assert len(sections) == 1                                   # the fenced # did not split
+    assert sections[0].heading_path == ("Real Heading",)
+    assert "# not a heading" in sections[0].text
 
 
 def test_empty_file_yields_no_sections(tmp_path: Path) -> None:
@@ -171,3 +193,41 @@ def test_build_chunks_carries_page_and_heading_metadata() -> None:
     assert chunks[0].metadata["char_count"] == len("Alpha on page one.")
     # Ordinals run per-document across sections; ids stay deterministic.
     assert [c.id for c in chunks] == ["guide.pdf#0", "guide.pdf#1"]
+
+
+def test_build_chunks_prefixes_text_with_heading_breadcrumb() -> None:
+    docs = [
+        LoadedDocument(
+            meta=_fake_doc_meta("hr.md"),
+            sections=[
+                DocumentSection(text="Full coverage.", heading_path=("Benefits", "Health")),
+                DocumentSection(text="No heading here.", page=3),
+            ],
+        )
+    ]
+    chunks = build_chunks(docs, chunk_size=200, chunk_overlap=20)
+
+    # The heading breadcrumb travels inside the embedded text (self-contained chunk)...
+    assert chunks[0].text == "Benefits > Health\n\nFull coverage."
+    assert chunks[0].metadata["char_count"] == len(chunks[0].text)
+    # ...and a section with no heading is unchanged.
+    assert chunks[1].text == "No heading here."
+
+
+def test_build_chunks_keeps_final_text_within_chunk_size_with_long_heading() -> None:
+    """A long heading breadcrumb must not push a chunk's final text over chunk_size."""
+    docs = [
+        LoadedDocument(
+            meta=_fake_doc_meta("hr.md"),
+            sections=[
+                DocumentSection(
+                    text="word " * 200,
+                    heading_path=("Employee Handbook", "Compensation and Benefits", "Details"),
+                )
+            ],
+        )
+    ]
+    chunks = build_chunks(docs, chunk_size=200, chunk_overlap=20)
+    assert len(chunks) > 1
+    assert all(len(c.text) <= 200 for c in chunks)                 # prefix counted in sizing
+    assert all(c.text.startswith("Employee Handbook >") for c in chunks)

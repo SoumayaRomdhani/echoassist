@@ -16,9 +16,10 @@ Heavy parsers (pypdf, python-docx, BeautifulSoup) are imported lazily *inside* t
 loader, so importing this module is cheap and only the file types you actually ingest
 need their dependency installed (``pip install 'echoassist-backend[rag]'``).
 
-Scope note: ``.md``/``.txt`` are intentionally returned as a single whole-document
-section, preserving the current character chunker byte-for-byte. Markdown
-heading-aware chunking is the separate structure-aware-chunking follow-up.
+Section granularity by type: Markdown, DOCX, and HTML are **heading-aware** — one
+section per heading, carrying its ``heading_path`` breadcrumb. PDF is one section per
+page (carrying ``page``). Plain ``.txt`` has no structure, so it is a single
+whole-document section.
 """
 
 from __future__ import annotations
@@ -73,6 +74,49 @@ def _read_text(path: Path) -> str:
 def _load_text(path: Path) -> list[DocumentSection]:
     text = _read_text(path).strip()
     return [DocumentSection(text=text)] if text else []
+
+
+# --- Markdown (heading-aware) ---------------------------------------------- #
+_MD_HEADING = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
+_MD_FENCE = re.compile(r"^\s*(```|~~~)")
+
+
+def _load_markdown(path: Path) -> list[DocumentSection]:
+    """Split Markdown into one section per heading, tracking the heading path.
+
+    Keeps each section coherent (a chunk never mixes content from two headings) and
+    records the breadcrumb (``Setup > Login``) so the chunker can prefix it. Headings
+    inside fenced code blocks (```/~~~) are ignored so code comments aren't misread.
+    """
+    sections: list[DocumentSection] = []
+    stack: list[tuple[int, str]] = []  # (heading level, title)
+    buffer: list[str] = []
+    in_fence = False
+
+    def flush() -> None:
+        body = "\n".join(buffer).strip()
+        if body:
+            sections.append(
+                DocumentSection(text=body, heading_path=tuple(t for _, t in stack))
+            )
+        buffer.clear()
+
+    for line in _read_text(path).splitlines():
+        if _MD_FENCE.match(line):
+            in_fence = not in_fence
+            buffer.append(line)
+            continue
+        heading = None if in_fence else _MD_HEADING.match(line)
+        if heading:
+            flush()  # the previous section ends where a new heading begins
+            level = len(heading.group(1))
+            while stack and stack[-1][0] >= level:
+                stack.pop()
+            stack.append((level, heading.group(2).strip()))
+        else:
+            buffer.append(line)
+    flush()
+    return sections
 
 
 # --- PDF (pypdf, one section per page) ------------------------------------- #
@@ -235,8 +279,8 @@ def _load_html(path: Path) -> list[DocumentSection]:
 
 # --- dispatch -------------------------------------------------------------- #
 _LOADERS = {
-    ".md": _load_text,
-    ".markdown": _load_text,
+    ".md": _load_markdown,
+    ".markdown": _load_markdown,
     ".txt": _load_text,
     ".pdf": _load_pdf,
     ".docx": _load_docx,
