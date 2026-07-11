@@ -206,6 +206,9 @@ class Settings(BaseSettings):
     rrf_k: int = 60             # Reciprocal Rank Fusion constant
     chunk_size: int = 1200
     chunk_overlap: int = 150
+    # Reject knowledge-base uploads larger than this (bytes); the route enforces it
+    # while streaming, so an oversized file never fully buffers in memory. Default 10 MiB.
+    max_upload_bytes: int = 10 * 1024 * 1024
 
     # --- Conversation state (Sprint 3) ---
     state_backend: StateBackendName = StateBackendName.redis

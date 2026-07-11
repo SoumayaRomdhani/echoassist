@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from src.agent.domain import list_available_domains
 from src.api.context import AppResources, get_resources
-from src.api.ingest_service import UnsupportedDocument
+from src.api.ingest_service import DocumentTooLarge, UnsupportedDocument
 from src.api.schemas import DocumentUploadOut
 
 log = logging.getLogger("echoassist.api.documents")
@@ -30,7 +30,11 @@ async def upload_document(
     if domain not in list_available_domains(resources.settings.config_dir):
         raise HTTPException(status_code=404, detail=f"domain '{domain}' not found")
 
-    content = await file.read()
+    try:
+        content = await resources.ingest_service.read_capped(file)
+    except DocumentTooLarge as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+
     try:
         report = await resources.ingest_service.add_document(
             domain, file.filename or "document.md", content

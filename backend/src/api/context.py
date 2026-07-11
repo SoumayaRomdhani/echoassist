@@ -307,6 +307,7 @@ def build_resources(settings: Settings | None = None) -> AppResources:
             chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap,
         ),
         lock=pool.model_lock,
+        max_upload_bytes=settings.max_upload_bytes,
     )
     return AppResources(
         settings=settings,

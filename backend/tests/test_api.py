@@ -173,6 +173,14 @@ async def test_document_upload_rejects_unsupported_type(client) -> None:
     assert response.status_code == 400
 
 
+async def test_document_upload_rejects_oversize_file(client, resources) -> None:
+    resources.ingest_service._max_upload_bytes = 16  # force a tiny cap for the test
+    files = {"file": ("big.md", b"x" * 100, "text/markdown")}
+    response = await client.post("/domains/screening/documents", files=files)
+    assert response.status_code == 413
+    assert "limit" in response.json()["detail"]
+
+
 async def test_document_upload_unknown_domain_404(client) -> None:
     files = {"file": ("kb.md", b"hello", "text/markdown")}
     assert (await client.post("/domains/nope/documents", files=files)).status_code == 404
