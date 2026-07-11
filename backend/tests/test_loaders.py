@@ -110,8 +110,12 @@ def test_load_documents_skips_unsupported_and_empty(tmp_path: Path) -> None:
     (tmp_path / "good.md").write_text("hello world", encoding="utf-8")
     (tmp_path / "skip.exe").write_bytes(b"MZ")
     (tmp_path / "blank.txt").write_text("  ", encoding="utf-8")
-    docs = load_documents(tmp_path)
-    assert [d.source for d in docs] == ["good.md"]
+    result = load_documents(tmp_path)
+    # Only good.md yields indexable text...
+    assert [d.source for d in result.documents] == ["good.md"]
+    # ...but the empty (supported) file is still "attempted" so re-ingest can clean it;
+    # the unsupported .exe is not attempted at all.
+    assert set(result.attempted_sources) == {"good.md", "blank.txt"}
 
 
 def _fake_doc_meta(source: str = "guide.pdf") -> DocumentMeta:

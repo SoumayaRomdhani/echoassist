@@ -38,6 +38,11 @@ class VectorStore(ABC):
     def search_sparse(self, sparse: SparseVector, limit: int) -> list[ScoredChunk]: ...
 
     @abstractmethod
+    def delete_document(self, source: str) -> int:
+        """Remove every chunk of ``source``; return how many points were deleted."""
+        ...
+
+    @abstractmethod
     def count(self) -> int: ...
 
 
@@ -137,6 +142,30 @@ class QdrantVectorStore(VectorStore):
             with_payload=True,
         )
         return [ScoredChunk(self._to_chunk(p.payload), float(p.score)) for p in result.points]
+
+    def delete_document(self, source: str) -> int:
+        """Delete all points whose payload ``source`` matches (by filter, any ordinal).
+
+        Deterministic point ids only overwrite same-ordinal chunks on re-upsert, so a
+        shorter new version of a document would otherwise leave its higher-ordinal
+        chunks orphaned — retrievable content from a file that no longer says it. This
+        removes the whole document by source before the fresh chunks are written.
+        """
+        from qdrant_client import models
+
+        if not self._client.collection_exists(self._collection):
+            return 0
+        selector = models.Filter(
+            must=[models.FieldCondition(key="source", match=models.MatchValue(value=source))]
+        )
+        removed = self._client.count(self._collection, count_filter=selector, exact=True).count
+        if removed:
+            self._client.delete(
+                self._collection,
+                points_selector=models.FilterSelector(filter=selector),
+                wait=True,
+            )
+        return removed
 
     def count(self) -> int:
         if not self._client.collection_exists(self._collection):

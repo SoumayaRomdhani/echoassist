@@ -32,6 +32,8 @@ class FakeStore(VectorStore):
 
     def ensure_collection(self, dense_dim, *, recreate=False): ...
     def upsert(self, chunks): ...
+    def delete_document(self, source) -> int:
+        return 0
     def count(self) -> int:
         return len(self._dense)
 

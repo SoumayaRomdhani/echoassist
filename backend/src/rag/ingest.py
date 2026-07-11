@@ -32,26 +32,43 @@ class LoadedDocument:
 
 
 @dataclass(frozen=True, slots=True)
+class LoadResult:
+    """Outcome of scanning a docs folder.
+
+    ``documents`` are the files that yielded indexable text. ``attempted_sources`` is
+    *every* supported file seen — including ones that extracted to zero sections or
+    failed to parse — so a re-ingest can clean their stale chunks even when the new
+    version indexes nothing (scanned/empty/corrupt replacement).
+    """
+
+    documents: list[LoadedDocument]
+    attempted_sources: list[str]
+
+
+@dataclass(frozen=True, slots=True)
 class IngestReport:
     documents: int
     chunks: int
     collection_count: int
 
 
-def load_documents(docs_dir: Path) -> list[LoadedDocument]:
+def load_documents(docs_dir: Path) -> LoadResult:
     """Extract every supported document under ``docs_dir`` into provenance-tagged sections.
 
     A file that cannot be parsed (corrupt PDF, missing text layer) is logged and
-    skipped rather than aborting the whole domain ingest.
+    skipped rather than aborting the whole domain ingest — but it is still recorded in
+    ``attempted_sources`` so its old chunks are cleaned on re-ingest.
     """
     if not docs_dir.exists():
         raise FileNotFoundError(f"Domain docs directory not found: {docs_dir}")
     # One timestamp for the whole run, so every document shares a consistent indexed_at.
     indexed_at = utc_iso()
     docs: list[LoadedDocument] = []
+    attempted: list[str] = []
     for path in sorted(docs_dir.rglob("*")):
         if not (path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES):
             continue
+        attempted.append(path.name)
         try:
             sections = [s for s in extract(path) if s.text.strip()]
         except DocumentLoadError as exc:
@@ -60,7 +77,7 @@ def load_documents(docs_dir: Path) -> list[LoadedDocument]:
         if sections:
             meta = DocumentMeta.describe(path, indexed_at=indexed_at)
             docs.append(LoadedDocument(meta=meta, sections=sections))
-    return docs
+    return LoadResult(documents=docs, attempted_sources=attempted)
 
 
 def build_chunks(
@@ -104,18 +121,30 @@ def ingest(
 ) -> IngestReport:
     """Index every document in ``docs_dir`` into the vector store."""
     with span("rag.ingest"):
-        docs = load_documents(docs_dir)
-        chunks = build_chunks(docs, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-        log.info("Ingesting %d documents -> %d chunks", len(docs), len(chunks))
+        load = load_documents(docs_dir)
+        chunks = build_chunks(load.documents, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        log.info("Ingesting %d documents -> %d chunks", len(load.documents), len(chunks))
 
         store.ensure_collection(embedder.dense_dim, recreate=recreate)
+        # Embed BEFORE touching the existing index: if embedding fails, we raise here and
+        # the current vectors are left intact rather than half-deleted.
         vectors = embedder.embed_documents([c.text for c in chunks])
         embedded = [
             EmbeddedChunk(c, dense, sparse)
             for c, (dense, sparse) in zip(chunks, vectors, strict=True)
         ]
+
+        # Re-ingest (recreate=False): drop the existing chunks of every re-ingested source
+        # before writing the new ones — keyed on *attempted* sources, so a revision that now
+        # extracts nothing (scanned/empty/corrupt) still has its stale content removed.
+        # recreate=True already starts from an empty collection, so no cleanup is needed.
+        if not recreate:
+            removed = sum(store.delete_document(source) for source in set(load.attempted_sources))
+            if removed:
+                log.info("re-ingest: removed %d stale chunk(s) before upsert", removed)
+
         store.upsert(embedded)
 
         return IngestReport(
-            documents=len(docs), chunks=len(chunks), collection_count=store.count()
+            documents=len(load.documents), chunks=len(chunks), collection_count=store.count()
         )
