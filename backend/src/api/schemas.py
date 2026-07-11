@@ -188,6 +188,21 @@ class DocumentUploadOut(BaseModel):
     skipped: list[SkippedDocumentOut] = []
 
 
+class DocumentDeleteOut(BaseModel):
+    domain: str
+    filename: str
+    file_removed: bool
+    chunks_removed: int
+
+
+class DomainReindexOut(BaseModel):
+    domain: str
+    documents: int
+    chunks: int
+    collection_count: int
+    skipped: list[SkippedDocumentOut] = []
+
+
 # --- Health ---------------------------------------------------------------- #
 class HealthOut(BaseModel):
     status: str               # "ok" | "degraded"

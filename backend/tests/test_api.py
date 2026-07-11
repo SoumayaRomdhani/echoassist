@@ -184,3 +184,58 @@ async def test_document_upload_rejects_oversize_file(client, resources) -> None:
 async def test_document_upload_unknown_domain_404(client) -> None:
     files = {"file": ("kb.md", b"hello", "text/markdown")}
     assert (await client.post("/domains/nope/documents", files=files)).status_code == 404
+
+
+async def test_document_delete_removes_file_and_vectors(client, resources) -> None:
+    svc = resources.ingest_service
+    docs = svc.docs_dir("screening")
+    docs.mkdir(parents=True, exist_ok=True)
+    (docs / "kb.md").write_text("content", encoding="utf-8")
+    svc._deleter = lambda domain, source: 3  # fake store purge
+
+    response = await client.delete("/domains/screening/documents/kb.md")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["file_removed"] is True and body["chunks_removed"] == 3
+    assert not (docs / "kb.md").exists()
+
+
+async def test_document_delete_missing_returns_404(client, resources) -> None:
+    resources.ingest_service._deleter = lambda domain, source: 0
+    response = await client.delete("/domains/screening/documents/ghost.md")
+    assert response.status_code == 404
+
+
+async def test_document_delete_unknown_domain_404(client) -> None:
+    assert (await client.delete("/domains/nope/documents/kb.md")).status_code == 404
+
+
+async def test_document_delete_subdir_source(client, resources) -> None:
+    svc = resources.ingest_service
+    docs = svc.docs_dir("screening")
+    (docs / "hr").mkdir(parents=True, exist_ok=True)
+    (docs / "hr" / "faq.md").write_text("content", encoding="utf-8")
+    seen: list[str] = []
+    svc._deleter = lambda domain, source: (seen.append(source), 2)[1]
+
+    response = await client.delete("/domains/screening/documents/hr/faq.md")
+    assert response.status_code == 200
+    assert response.json()["filename"] == "hr/faq.md"     # relative source preserved
+    assert seen == ["hr/faq.md"]
+    assert not (docs / "hr" / "faq.md").exists()
+
+
+async def test_domain_reindex(client, resources) -> None:
+    from src.rag.ingest import IngestReport
+
+    resources.ingest_service._reindexer = lambda docs_dir, domain: IngestReport(
+        documents=3, chunks=7, collection_count=7
+    )
+    response = await client.post("/domains/screening/reindex")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["documents"] == 3 and body["chunks"] == 7 and body["collection_count"] == 7
+
+
+async def test_domain_reindex_unknown_domain_404(client) -> None:
+    assert (await client.post("/domains/nope/reindex")).status_code == 404

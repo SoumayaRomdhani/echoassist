@@ -45,7 +45,12 @@ from src.agent.notes import load_notes_schema
 from src.agent.orchestrator import VoicePipeline
 from src.agent.state import ConversationState, StateStore
 from src.api.events import CallEventHub
-from src.api.ingest_service import IngestService, default_indexer
+from src.api.ingest_service import (
+    IngestService,
+    default_deleter,
+    default_indexer,
+    default_reindexer,
+)
 from src.api.runner import (
     AudioInput,
     CallEngine,
@@ -303,6 +308,11 @@ def build_resources(settings: Settings | None = None) -> AppResources:
     ingest_service = IngestService(
         data_dir=settings.data_dir,
         indexer=default_indexer(
+            pool.embedder, pool.vector_store,
+            chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap,
+        ),
+        deleter=default_deleter(pool.vector_store),
+        reindexer=default_reindexer(
             pool.embedder, pool.vector_store,
             chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap,
         ),
