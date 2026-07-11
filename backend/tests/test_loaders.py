@@ -116,6 +116,23 @@ def test_load_documents_skips_unsupported_and_empty(tmp_path: Path) -> None:
     # ...but the empty (supported) file is still "attempted" so re-ingest can clean it;
     # the unsupported .exe is not attempted at all.
     assert set(result.attempted_sources) == {"good.md", "blank.txt"}
+    # The empty supported file is reported as skipped (not silently ignored).
+    assert [s.source for s in result.skipped] == ["blank.txt"]
+    assert "no extractable text" in result.skipped[0].reason
+
+
+def test_corrupt_file_is_skipped_and_reported_not_fatal(tmp_path: Path) -> None:
+    """A corrupt PDF must not abort the batch — good files still index, bad one reported."""
+    pytest.importorskip("pypdf")
+    (tmp_path / "good.md").write_text("Real, indexable content.", encoding="utf-8")
+    (tmp_path / "broken.pdf").write_bytes(b"%PDF-1.4 this is not really a pdf body")
+
+    result = load_documents(tmp_path)
+
+    assert [d.source for d in result.documents] == ["good.md"]     # good file survives
+    assert [s.source for s in result.skipped] == ["broken.pdf"]    # bad file reported
+    assert result.skipped[0].reason                                # with a reason
+    assert "broken.pdf" in result.attempted_sources               # still tracked for cleanup
 
 
 def _fake_doc_meta(source: str = "guide.pdf") -> DocumentMeta:

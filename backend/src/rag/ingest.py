@@ -7,13 +7,13 @@ Run as a batch step (scripts/ingest_docs.py), never during a call
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from src.observability.tracing import span
 from src.rag.chunking import chunk_text
 from src.rag.embeddings import HybridEmbedder
-from src.rag.loaders import SUPPORTED_SUFFIXES, DocumentLoadError, DocumentSection, extract
+from src.rag.loaders import SUPPORTED_SUFFIXES, DocumentSection, extract
 from src.rag.metadata import DocumentMeta, build_chunk_metadata, utc_iso
 from src.rag.types import Chunk, EmbeddedChunk
 from src.rag.vectorstore import VectorStore
@@ -32,17 +32,27 @@ class LoadedDocument:
 
 
 @dataclass(frozen=True, slots=True)
+class SkippedDocument:
+    """A supported file that could not be indexed, with a human-readable reason."""
+
+    source: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class LoadResult:
     """Outcome of scanning a docs folder.
 
     ``documents`` are the files that yielded indexable text. ``attempted_sources`` is
     *every* supported file seen — including ones that extracted to zero sections or
     failed to parse — so a re-ingest can clean their stale chunks even when the new
-    version indexes nothing (scanned/empty/corrupt replacement).
+    version indexes nothing. ``skipped`` records those that could not be indexed (corrupt
+    file, no extractable text) so the caller can report them instead of failing silently.
     """
 
     documents: list[LoadedDocument]
     attempted_sources: list[str]
+    skipped: list[SkippedDocument] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,14 +60,16 @@ class IngestReport:
     documents: int
     chunks: int
     collection_count: int
+    skipped: list[SkippedDocument] = field(default_factory=list)
 
 
 def load_documents(docs_dir: Path) -> LoadResult:
     """Extract every supported document under ``docs_dir`` into provenance-tagged sections.
 
-    A file that cannot be parsed (corrupt PDF, missing text layer) is logged and
-    skipped rather than aborting the whole domain ingest — but it is still recorded in
-    ``attempted_sources`` so its old chunks are cleaned on re-ingest.
+    Each supported file is handled independently: a corrupt or unreadable file (or one
+    with no extractable text — an empty or scanned document) is skipped and recorded in
+    ``skipped`` rather than aborting the whole domain ingest. Every supported file is also
+    recorded in ``attempted_sources`` so its old chunks are cleaned on re-ingest.
     """
     if not docs_dir.exists():
         raise FileNotFoundError(f"Domain docs directory not found: {docs_dir}")
@@ -65,6 +77,7 @@ def load_documents(docs_dir: Path) -> LoadResult:
     indexed_at = utc_iso()
     docs: list[LoadedDocument] = []
     attempted: list[str] = []
+    skipped: list[SkippedDocument] = []
     for path in sorted(docs_dir.rglob("*")):
         if not (path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES):
             continue
@@ -74,13 +87,17 @@ def load_documents(docs_dir: Path) -> LoadResult:
         attempted.append(source)
         try:
             sections = [s for s in extract(path) if s.text.strip()]
-        except DocumentLoadError as exc:
-            log.warning("skipping %s: %s", source, exc)
-            continue
-        if sections:
+            if not sections:
+                reason = "no extractable text (empty or scanned document?)"
+                log.warning("skipping %s: %s", source, reason)
+                skipped.append(SkippedDocument(source, reason))
+                continue
             meta = DocumentMeta.describe(path, source=source, indexed_at=indexed_at)
             docs.append(LoadedDocument(meta=meta, sections=sections))
-    return LoadResult(documents=docs, attempted_sources=attempted)
+        except Exception as exc:  # noqa: BLE001 - one bad file must not abort the whole ingest
+            log.warning("skipping %s: %s", source, exc)
+            skipped.append(SkippedDocument(source, str(exc)))
+    return LoadResult(documents=docs, attempted_sources=attempted, skipped=skipped)
 
 
 def build_chunks(
@@ -127,6 +144,12 @@ def ingest(
         load = load_documents(docs_dir)
         chunks = build_chunks(load.documents, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         log.info("Ingesting %d documents -> %d chunks", len(load.documents), len(chunks))
+        if load.skipped:
+            log.warning(
+                "skipped %d file(s): %s",
+                len(load.skipped),
+                ", ".join(s.source for s in load.skipped),
+            )
 
         store.ensure_collection(embedder.dense_dim, recreate=recreate)
         # Embed BEFORE touching the existing index: if embedding fails, we raise here and
@@ -149,5 +172,8 @@ def ingest(
         store.upsert(embedded)
 
         return IngestReport(
-            documents=len(load.documents), chunks=len(chunks), collection_count=store.count()
+            documents=len(load.documents),
+            chunks=len(chunks),
+            collection_count=store.count(),
+            skipped=load.skipped,
         )

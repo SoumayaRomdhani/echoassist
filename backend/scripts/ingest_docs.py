@@ -49,6 +49,11 @@ def main() -> None:
             f"{report.chunks} chunks  (collection now holds {report.collection_count})\n"
         )
     )
+    if report.skipped:
+        print(bold(f"skipped {len(report.skipped)} file(s):"))
+        for skip in report.skipped:
+            print(f"  - {skip.source}: {skip.reason}")
+        print()
 
 
 if __name__ == "__main__":

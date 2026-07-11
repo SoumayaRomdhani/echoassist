@@ -15,9 +15,21 @@ export function DocumentUpload({ domain }: { domain: string }) {
     setFileName(file.name)
     try {
       const report = await upload.mutateAsync(file)
-      toast.success('Document indexed', {
-        description: `${report.filename}: ${report.chunks} chunks · ${report.collection_count} in collection`,
-      })
+      const skipped = report.skipped ?? []
+      const failed = skipped.find((s) => s.source === file.name || s.source.endsWith(`/${file.name}`))
+      if (failed) {
+        // The uploaded file itself could not be indexed — report why, not a false success.
+        toast.warning('Could not index document', { description: `${file.name}: ${failed.reason}` })
+      } else {
+        toast.success('Document indexed', {
+          description: `${report.filename}: ${report.chunks} chunks · ${report.collection_count} in collection`,
+        })
+        if (skipped.length > 0) {
+          toast.warning('Some other files were skipped', {
+            description: skipped.map((s) => `${s.source}: ${s.reason}`).join('; '),
+          })
+        }
+      }
     } catch (error) {
       const message = error instanceof ApiError ? error.detail : 'Upload failed.'
       toast.error('Upload failed', { description: message })

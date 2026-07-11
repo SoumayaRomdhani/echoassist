@@ -174,12 +174,18 @@ class CallStatusOut(BaseModel):
 
 
 # --- Documents ------------------------------------------------------------- #
+class SkippedDocumentOut(BaseModel):
+    source: str
+    reason: str
+
+
 class DocumentUploadOut(BaseModel):
     domain: str
     filename: str
     documents: int
     chunks: int
     collection_count: int
+    skipped: list[SkippedDocumentOut] = []
 
 
 # --- Health ---------------------------------------------------------------- #

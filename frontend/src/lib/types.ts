@@ -80,12 +80,18 @@ export interface StartCallResponse {
   ws_url: string
 }
 
+export interface SkippedDocument {
+  source: string
+  reason: string
+}
+
 export interface DocumentUploadOut {
   domain: string
   filename: string
   documents: number
   chunks: number
   collection_count: number
+  skipped?: SkippedDocument[]
 }
 
 export interface HealthOut {

@@ -155,6 +155,20 @@ def test_embedding_failure_on_reingest_leaves_index_intact(tmp_path: Path) -> No
     assert set(store.points) == before  # nothing deleted, index still complete
 
 
+def test_ingest_reports_skipped_files_and_indexes_the_rest(tmp_path: Path) -> None:
+    """A bad file is skipped+reported in the IngestReport; the good file still indexes."""
+    pytest.importorskip("pypdf")
+    store, embedder = FakeStore(), FakeEmbedder()
+    (tmp_path / "good.md").write_text("Indexable content here.", "utf-8")
+    (tmp_path / "broken.pdf").write_bytes(b"%PDF-1.4 not a real pdf")
+
+    report = ingest(tmp_path, embedder, store, chunk_size=200, chunk_overlap=20, recreate=True)
+
+    assert report.documents == 1 and report.chunks >= 1
+    assert [s.source for s in report.skipped] == ["broken.pdf"]
+    assert {ec.chunk.source for ec in store.points.values()} == {"good.md"}
+
+
 def test_same_filename_in_different_folders_do_not_collide(tmp_path: Path) -> None:
     """a/faq.md and b/faq.md must index as distinct documents, not overwrite each other."""
     store, embedder = FakeStore(), FakeEmbedder()

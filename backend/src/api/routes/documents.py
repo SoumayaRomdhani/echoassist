@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from src.agent.domain import list_available_domains
 from src.api.context import AppResources, get_resources
 from src.api.ingest_service import DocumentTooLarge, UnsupportedDocument
-from src.api.schemas import DocumentUploadOut
+from src.api.schemas import DocumentUploadOut, SkippedDocumentOut
 
 log = logging.getLogger("echoassist.api.documents")
 
@@ -53,4 +53,5 @@ async def upload_document(
         documents=report.documents,
         chunks=report.chunks,
         collection_count=report.collection_count,
+        skipped=[SkippedDocumentOut(source=s.source, reason=s.reason) for s in report.skipped],
     )
