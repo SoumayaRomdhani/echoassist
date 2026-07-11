@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from src.agent.consent import ConsentDecision, disclosure_hash
 from src.agent.domain import DomainConfig
 from src.agent.finalize import FinalizedCall
+from src.agent.grounding import Citation
 from src.agent.orchestrator import VoicePipeline
 from src.agent.state import ConversationState, StateStore
 from src.api.events import CallEventHub
@@ -227,7 +228,10 @@ class CallManager:
             with span("call.turn"):
                 turn = await pipeline.interview_turn(audio)
             self._emit_transcript(call_id, "caller", turn.transcript)
-            self._emit_transcript(call_id, "assistant", turn.reply, citations=turn.citations)
+            self._emit_transcript(
+                call_id, "assistant", turn.reply,
+                citations=turn.citations, details=turn.details,
+            )
             if turn.ended:
                 break
 
@@ -240,12 +244,23 @@ class CallManager:
 
     # --- helpers -----------------------------------------------------------
     def _emit_transcript(
-        self, call_id: str, role: str, text: str, *, citations: list[str] | None = None
+        self,
+        call_id: str,
+        role: str,
+        text: str,
+        *,
+        citations: list[str] | None = None,
+        details: list[Citation] | None = None,
     ) -> None:
         if not text:
             return
-        data = {"role": role, "text": text}
-        if citations:
+        data: dict = {"role": role, "text": text}
+        if details:
+            # Show the rich provenance (source — heading (p17)); keep the structured
+            # form too for a future citations UI. Falls back to bare sources.
+            data["citations"] = [d.label() for d in details]
+            data["citations_detail"] = [d.to_dict() for d in details]
+        elif citations:
             data["citations"] = citations
         self._hub.publish(call_id, "transcript", data)
 

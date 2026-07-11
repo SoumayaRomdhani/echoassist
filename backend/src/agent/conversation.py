@@ -25,7 +25,7 @@ import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
-from src.agent.grounding import SEARCH_TOOL, strip_citations
+from src.agent.grounding import SEARCH_TOOL, Citation, build_citations, strip_citations
 from src.agent.guardrails import is_grounded, refusal_message
 from src.agent.state import ConversationState
 from src.observability import latency
@@ -78,6 +78,7 @@ class AgentReply:
     citations: list[str] = field(default_factory=list)
     used_rag: bool = False
     retrieved: list[ScoredChunk] = field(default_factory=list)
+    details: list[Citation] = field(default_factory=list)  # per-source page/heading provenance
 
 
 class ConversationAgent:
@@ -117,11 +118,6 @@ class ConversationAgent:
         if not chunks:
             return "No relevant information was found in the knowledge base."
         return "\n\n".join(f"[{c.chunk.source}] {c.chunk.text}" for c in chunks)
-
-    @staticmethod
-    def _citations(text: str, retrieved: list[ScoredChunk]) -> list[str]:
-        sources = {c.chunk.source for c in retrieved}
-        return sorted(s for s in sources if f"[{s}]" in text)
 
     @staticmethod
     def _last_user(state: ConversationState) -> str:
@@ -165,11 +161,13 @@ class ConversationAgent:
         retrieved = await self._run_tools(messages, response, last_user)
         with latency.span("llm_total_ms"):
             final = await self._llm.chat(messages)
+        details = build_citations(final.text, retrieved)
         return AgentReply(
             text=strip_citations(final.text) or self._fallback,
-            citations=self._citations(final.text, retrieved),
+            citations=[c.source for c in details],
             used_rag=True,
             retrieved=retrieved,
+            details=details,
         )
 
     async def begin_stream(

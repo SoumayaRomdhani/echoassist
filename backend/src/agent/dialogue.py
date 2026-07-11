@@ -19,7 +19,7 @@ from typing import Protocol
 from src.agent.continuity import ContinuityTracker, is_closing
 from src.agent.conversation import ConversationAgent
 from src.agent.domain import DomainConfig
-from src.agent.grounding import GroundedResponder, strip_citations
+from src.agent.grounding import Citation, GroundedResponder, strip_citations
 from src.agent.guardrails import redact_pii, refusal_message
 from src.agent.jsonutil import extract_json
 from src.agent.state import ConversationState, StateStore
@@ -181,6 +181,7 @@ class DialogueTurn:
     ended: bool
     citations: list[str] = field(default_factory=list)
     intent: TurnIntent | None = None
+    details: list[Citation] = field(default_factory=list)  # per-source page/heading provenance
 
 
 @dataclass(frozen=True, slots=True)
@@ -282,6 +283,7 @@ class DialogueManager:
 
         pieces: list[str] = []
         citations: list[str] = []
+        details: list[Citation] = []
         for part in plan.parts:
             if isinstance(part, _Grounded):
                 answer = await self._responder.answer(
@@ -289,6 +291,7 @@ class DialogueManager:
                 )
                 pieces.append(answer.text)
                 citations.extend(answer.citations)
+                details.extend(answer.details)
             else:
                 pieces.append(part)
         text = " ".join(p for p in pieces if p).strip()
@@ -296,7 +299,9 @@ class DialogueManager:
         self._continuity.record_assistant(self._state, text, citations)
         self._state.add_turn("assistant", text)
         await self._store.save(self._state)
-        return DialogueTurn(text=text, ended=plan.ended, citations=citations, intent=plan.intent)
+        return DialogueTurn(
+            text=text, ended=plan.ended, citations=citations, intent=plan.intent, details=details
+        )
 
     async def begin_streaming_turn(self, transcript: str) -> tuple[bool, AsyncIterator[str]]:
         """Classify + plan the turn eagerly, then return ``(is_rag, reply-text stream)``.
@@ -347,7 +352,9 @@ class DialogueManager:
         self._state.add_turn("assistant", text)
         await self._store.save(self._state)
         latency.observe(is_rag=reply.used_rag)
-        return DialogueTurn(text=text, ended=False, citations=reply.citations)
+        return DialogueTurn(
+            text=text, ended=False, citations=reply.citations, details=reply.details
+        )
 
     async def _agent_stream(self, transcript: str) -> tuple[bool, AsyncIterator[str]]:
         transcript = self._record_user(transcript)

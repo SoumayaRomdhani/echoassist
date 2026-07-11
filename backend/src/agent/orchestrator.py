@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 from src.agent.consent import ConsentDecision, classify_consent
 from src.agent.dialogue import DialogueManager
 from src.agent.domain import DomainConfig
+from src.agent.grounding import Citation
 from src.observability import latency
 from src.providers.llm.base import LLMProvider
 from src.providers.stt.base import STTProvider
@@ -86,6 +87,7 @@ class InterviewTurn:
     audio: AudioChunk
     ended: bool
     citations: list[str] = field(default_factory=list)
+    details: list[Citation] = field(default_factory=list)  # per-source page/heading provenance
 
 
 class VoicePipeline:
@@ -216,7 +218,9 @@ class VoicePipeline:
         tts_ms = (time.perf_counter() - tts_start) * 1000
         latency.observe(tts_total_ms=tts_ms, tts_first_byte_ms=tts_ms, sentence_tts_total_ms=tts_ms)
         latency.event("first_audio")
-        return InterviewTurn(transcript.text, turn.text, audio_out, turn.ended, turn.citations)
+        return InterviewTurn(
+            transcript.text, turn.text, audio_out, turn.ended, turn.citations, turn.details
+        )
 
     @property
     def interview_finished(self) -> bool:

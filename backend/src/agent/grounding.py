@@ -109,12 +109,76 @@ _GROUNDING_RULES = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class Citation:
+    """Where a cited answer came from — for the dashboard transcript and debugging.
+
+    One per cited source, aggregating the provenance of the retrieved chunks from that
+    source (page numbers, section heading) so the caller-facing transcript can show
+    ``guide.pdf — Managing authentication factors (p17)`` instead of a bare filename.
+    """
+
+    source: str
+    pages: list[int] = field(default_factory=list)     # distinct pages, ascending
+    heading: str = ""                                  # heading of the best-scoring chunk
+    chunk_ids: list[str] = field(default_factory=list)
+    score: float | None = None                         # best rerank score among the chunks
+
+    def label(self) -> str:
+        text = self.source
+        if self.heading:
+            text += f" — {self.heading}"
+        if self.pages:
+            text += " (" + ", ".join(f"p{page}" for page in self.pages) + ")"
+        return text
+
+    def to_dict(self) -> dict:
+        data: dict = {"source": self.source, "label": self.label()}
+        if self.pages:
+            data["pages"] = list(self.pages)
+        if self.heading:
+            data["heading"] = self.heading
+        if self.chunk_ids:
+            data["chunk_ids"] = list(self.chunk_ids)
+        if self.score is not None:
+            data["score"] = round(self.score, 4)
+        return data
+
+
+def build_citations(text: str, retrieved: list[ScoredChunk]) -> list[Citation]:
+    """Group the chunks the model cited (by ``[source]``) into rich, per-source citations."""
+    grouped: dict[str, list[ScoredChunk]] = {}
+    for scored in retrieved:
+        source = scored.chunk.source
+        if f"[{source}]" in text:
+            grouped.setdefault(source, []).append(scored)
+
+    citations: list[Citation] = []
+    for source, chunks in sorted(grouped.items()):
+        ranked = sorted(chunks, key=lambda c: c.score, reverse=True)
+        pages = sorted(
+            {c.chunk.metadata["page"] for c in ranked if c.chunk.metadata.get("page") is not None}
+        )
+        headings = [h for h in (c.chunk.metadata.get("heading") for c in ranked) if h]
+        citations.append(
+            Citation(
+                source=source,
+                pages=pages,
+                heading=headings[0] if headings else "",
+                chunk_ids=[c.chunk.id for c in ranked],
+                score=ranked[0].score if ranked else None,
+            )
+        )
+    return citations
+
+
 @dataclass(slots=True)
 class GroundedAnswer:
     text: str
     citations: list[str]                       # source filenames cited in the answer
     retrieved: list[ScoredChunk] = field(default_factory=list)
     tool_calls: int = 0
+    details: list[Citation] = field(default_factory=list)  # per-source page/heading provenance
 
 
 class GroundedResponder:
@@ -143,11 +207,6 @@ class GroundedResponder:
         if not chunks:
             return "No relevant documents were found."
         return "\n\n".join(f"[{c.chunk.source}] {c.chunk.text}" for c in chunks)
-
-    @staticmethod
-    def _citations(text: str, retrieved: list[ScoredChunk]) -> list[str]:
-        sources = {c.chunk.source for c in retrieved}
-        return sorted(s for s in sources if f"[{s}]" in text)
 
     async def _retrieve_confident(self, query: str) -> tuple[list[ScoredChunk], int]:
         """Retrieve for ``query`` and keep only chunks past the grounding gate."""
@@ -291,9 +350,11 @@ class GroundedResponder:
         if not retrieved:
             return GroundedAnswer(text=self._fallback_message, citations=[], tool_calls=tool_calls)
         # Citations are parsed from the raw model text; the spoken text has them stripped.
+        details = build_citations(raw_text, retrieved)
         return GroundedAnswer(
             text=_spoken(raw_text),
-            citations=self._citations(raw_text, retrieved),
+            citations=[c.source for c in details],
             retrieved=retrieved,
             tool_calls=tool_calls,
+            details=details,
         )
