@@ -5,9 +5,13 @@ import type {
   CallListOut,
   CampaignOut,
   ConsentLogOut,
+  DocumentDeleteOut,
+  DocumentListOut,
   DocumentUploadOut,
   DomainOut,
+  DomainReindexOut,
   HealthOut,
+  SearchPreviewOut,
   StartCallRequest,
   StartCallResponse,
 } from './types'
@@ -27,6 +31,7 @@ export const queryKeys = {
   calls: (params: CallsParams) => ['calls', 'list', params] as const,
   call: (id: string) => ['calls', 'detail', id] as const,
   consent: (id: string) => ['calls', 'detail', id, 'consent'] as const,
+  documents: (domain: string) => ['domains', domain, 'documents'] as const,
 }
 
 function callsQueryString(params: CallsParams): string {
@@ -102,6 +107,19 @@ export function useStartCall() {
   })
 }
 
+function refreshDomainDocuments(queryClient: ReturnType<typeof useQueryClient>, domain: string) {
+  void queryClient.invalidateQueries({ queryKey: queryKeys.domain(domain) })
+  void queryClient.invalidateQueries({ queryKey: queryKeys.documents(domain) })
+}
+
+export function useDocuments(domain: string) {
+  return useQuery({
+    queryKey: queryKeys.documents(domain),
+    queryFn: () => api.get<DocumentListOut>(`/domains/${domain}/documents`),
+    enabled: domain.length > 0,
+  })
+}
+
 export function useUploadDocument(domain: string) {
   const queryClient = useQueryClient()
   return useMutation({
@@ -110,8 +128,32 @@ export function useUploadDocument(domain: string) {
       form.append('file', file)
       return api.postForm<DocumentUploadOut>(`/domains/${domain}/documents`, form)
     },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.domain(domain) })
-    },
+    onSuccess: () => refreshDomainDocuments(queryClient, domain),
+  })
+}
+
+export function useDeleteDocument(domain: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (source: string) =>
+      api.del<DocumentDeleteOut>(
+        `/domains/${domain}/documents/${source.split('/').map(encodeURIComponent).join('/')}`,
+      ),
+    onSuccess: () => refreshDomainDocuments(queryClient, domain),
+  })
+}
+
+export function useReindexDomain(domain: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.postJson<DomainReindexOut>(`/domains/${domain}/reindex`, {}),
+    onSuccess: () => refreshDomainDocuments(queryClient, domain),
+  })
+}
+
+export function useSearchPreview(domain: string) {
+  return useMutation({
+    mutationFn: (query: string) =>
+      api.postJson<SearchPreviewOut>(`/domains/${domain}/search`, { query, limit: 6 }),
   })
 }

@@ -14,6 +14,7 @@ import { cn } from '@/lib/cn'
 import { useDomains } from '@/lib/query'
 import type { DomainOut } from '@/lib/types'
 import { DocumentUpload } from './DocumentUpload'
+import { DocumentsPanel } from './DocumentsPanel'
 
 function IndexedBadge({ indexed }: { indexed: boolean | null }) {
   if (indexed) {
@@ -122,6 +123,7 @@ export function DomainConfigPage({ defaultDomain }: { defaultDomain: string }) {
       <div className="space-y-6 lg:col-span-2">
         <DomainSummary domain={domain} />
         <DocumentUpload domain={domain.name} />
+        <DocumentsPanel domain={domain.name} />
       </div>
     </div>
   )

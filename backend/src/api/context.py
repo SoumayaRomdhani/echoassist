@@ -47,9 +47,11 @@ from src.agent.state import ConversationState, StateStore
 from src.api.events import CallEventHub
 from src.api.ingest_service import (
     IngestService,
+    default_counter,
     default_deleter,
     default_indexer,
     default_reindexer,
+    default_searcher,
 )
 from src.api.runner import (
     AudioInput,
@@ -316,6 +318,8 @@ def build_resources(settings: Settings | None = None) -> AppResources:
             pool.embedder, pool.vector_store,
             chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap,
         ),
+        counter=default_counter(pool.vector_store),
+        searcher=default_searcher(pool.retriever),
         lock=pool.model_lock,
         max_upload_bytes=settings.max_upload_bytes,
     )

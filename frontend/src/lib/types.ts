@@ -94,6 +94,47 @@ export interface DocumentUploadOut {
   skipped?: SkippedDocument[]
 }
 
+export interface DocumentInfo {
+  source: string
+  size_bytes: number
+  modified_at: string
+  chunks: number | null
+}
+
+export interface DocumentListOut {
+  domain: string
+  documents: DocumentInfo[]
+}
+
+export interface DocumentDeleteOut {
+  domain: string
+  filename: string
+  file_removed: boolean
+  chunks_removed: number
+}
+
+export interface DomainReindexOut {
+  domain: string
+  documents: number
+  chunks: number
+  collection_count: number
+  skipped?: SkippedDocument[]
+}
+
+export interface RetrievedChunk {
+  source: string
+  score: number
+  page: number | null
+  heading: string | null
+  snippet: string
+}
+
+export interface SearchPreviewOut {
+  domain: string
+  query: string
+  results: RetrievedChunk[]
+}
+
 export interface HealthOut {
   status: 'ok' | 'degraded'
   service: string

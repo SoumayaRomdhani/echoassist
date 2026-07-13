@@ -45,6 +45,13 @@ class VectorStore(ABC):
     @abstractmethod
     def count(self) -> int: ...
 
+    def chunk_counts(self) -> dict[str, int]:
+        """Map each ``source`` to how many chunks it has (for the admin document list).
+
+        Auxiliary/read-only; the default is empty so non-Qdrant stores need not implement it.
+        """
+        return {}
+
 
 class QdrantVectorStore(VectorStore):
     """Qdrant store. ``location`` is an HTTP(S) URL (server), ``:memory:``, or a
@@ -171,3 +178,25 @@ class QdrantVectorStore(VectorStore):
         if not self._client.collection_exists(self._collection):
             return 0
         return self._client.count(self._collection, exact=True).count
+
+    def chunk_counts(self) -> dict[str, int]:
+        """Tally chunks per ``source`` by scrolling the collection's source payloads."""
+        if not self._client.collection_exists(self._collection):
+            return {}
+        counts: dict[str, int] = {}
+        offset = None
+        while True:
+            points, offset = self._client.scroll(
+                self._collection,
+                limit=256,
+                offset=offset,
+                with_payload=["source"],
+                with_vectors=False,
+            )
+            for point in points:
+                source = (point.payload or {}).get("source")
+                if source:
+                    counts[source] = counts.get(source, 0) + 1
+            if offset is None:
+                break
+        return counts

@@ -239,3 +239,53 @@ async def test_domain_reindex(client, resources) -> None:
 
 async def test_domain_reindex_unknown_domain_404(client) -> None:
     assert (await client.post("/domains/nope/reindex")).status_code == 404
+
+
+async def test_document_list_with_chunk_counts(client, resources) -> None:
+    svc = resources.ingest_service
+    docs = svc.docs_dir("screening")
+    docs.mkdir(parents=True, exist_ok=True)
+    (docs / "a.md").write_text("hello", encoding="utf-8")
+    (docs / "b.md").write_text("world!!", encoding="utf-8")
+    svc._counter = lambda domain: {"a.md": 3}  # b.md has no count (store didn't know it)
+
+    body = (await client.get("/domains/screening/documents")).json()
+    assert body["domain"] == "screening"
+    by_source = {d["source"]: d for d in body["documents"]}
+    assert set(by_source) == {"a.md", "b.md"}
+    assert by_source["a.md"]["chunks"] == 3 and by_source["a.md"]["size_bytes"] == 5
+    assert by_source["b.md"]["chunks"] is None      # count unavailable -> null, still listed
+
+
+async def test_document_list_unknown_domain_404(client) -> None:
+    assert (await client.get("/domains/nope/documents")).status_code == 404
+
+
+async def test_search_preview_returns_chunks_with_provenance(client, resources) -> None:
+    from src.rag.types import Chunk, ScoredChunk
+
+    chunk = Chunk(
+        id="doc.md#0", source="doc.md", text="Reset your password from the portal. " * 20,
+        ordinal=0, metadata={"page": 2, "heading": "Password Reset"},
+    )
+    resources.ingest_service._searcher = lambda domain, query, limit: [ScoredChunk(chunk, 0.8712)]
+
+    body = (
+        await client.post("/domains/screening/search", json={"query": "reset password", "limit": 3})
+    ).json()
+    assert body["query"] == "reset password"
+    result = body["results"][0]
+    assert result["source"] == "doc.md"
+    assert result["page"] == 2 and result["heading"] == "Password Reset"
+    assert result["score"] == 0.8712
+    assert len(result["snippet"]) <= 300
+
+
+async def test_search_preview_rejects_empty_query(client) -> None:
+    response = await client.post("/domains/screening/search", json={"query": "   "})
+    assert response.status_code == 400
+
+
+async def test_search_preview_unknown_domain_404(client) -> None:
+    response = await client.post("/domains/nope/search", json={"query": "hi"})
+    assert response.status_code == 404

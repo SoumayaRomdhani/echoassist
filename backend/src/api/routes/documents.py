@@ -11,14 +11,79 @@ from src.api.context import AppResources, get_resources
 from src.api.ingest_service import DocumentTooLarge, UnsupportedDocument
 from src.api.schemas import (
     DocumentDeleteOut,
+    DocumentInfoOut,
+    DocumentListOut,
     DocumentUploadOut,
     DomainReindexOut,
+    RetrievedChunkOut,
+    SearchPreviewIn,
+    SearchPreviewOut,
     SkippedDocumentOut,
 )
 
 log = logging.getLogger("echoassist.api.documents")
 
 router = APIRouter(prefix="/domains", tags=["documents"])
+
+
+def _require_domain(domain: str, resources: AppResources) -> None:
+    if domain not in list_available_domains(resources.settings.config_dir):
+        raise HTTPException(status_code=404, detail=f"domain '{domain}' not found")
+
+
+@router.get("/{domain}/documents", response_model=DocumentListOut)
+async def list_documents(
+    domain: str,
+    resources: AppResources = Depends(get_resources),
+) -> DocumentListOut:
+    """List a domain's knowledge-base documents with size, modified time, and chunk count."""
+    _require_domain(domain, resources)
+    docs = await resources.ingest_service.list_documents(domain)
+    return DocumentListOut(
+        domain=domain,
+        documents=[
+            DocumentInfoOut(
+                source=d.source, size_bytes=d.size_bytes, modified_at=d.modified_at, chunks=d.chunks
+            )
+            for d in docs
+        ],
+    )
+
+
+@router.post("/{domain}/search", response_model=SearchPreviewOut)
+async def search_preview(
+    domain: str,
+    body: SearchPreviewIn,
+    resources: AppResources = Depends(get_resources),
+) -> SearchPreviewOut:
+    """Run the domain retriever for a test query and return the chunks it would ground on."""
+    _require_domain(domain, resources)
+    query = body.query.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query must not be empty")
+
+    try:
+        results = await resources.ingest_service.search(domain, query, body.limit)
+    except Exception as exc:  # noqa: BLE001 - retrieval needs Qdrant/models; surface as 503
+        log.warning("search preview failed for domain %s: %s", domain, exc)
+        raise HTTPException(
+            status_code=503, detail=f"search failed (is Qdrant running?): {exc}"
+        ) from exc
+
+    return SearchPreviewOut(
+        domain=domain,
+        query=query,
+        results=[
+            RetrievedChunkOut(
+                source=r.chunk.source,
+                score=round(r.score, 4),
+                page=r.chunk.metadata.get("page"),
+                heading=r.chunk.metadata.get("heading"),
+                snippet=r.chunk.text[:300],
+            )
+            for r in results
+        ],
+    )
 
 
 @router.post("/{domain}/documents", response_model=DocumentUploadOut, status_code=201)

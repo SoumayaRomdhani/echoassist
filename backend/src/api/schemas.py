@@ -203,6 +203,37 @@ class DomainReindexOut(BaseModel):
     skipped: list[SkippedDocumentOut] = []
 
 
+class DocumentInfoOut(BaseModel):
+    source: str
+    size_bytes: int
+    modified_at: str
+    chunks: int | None = None
+
+
+class DocumentListOut(BaseModel):
+    domain: str
+    documents: list[DocumentInfoOut]
+
+
+class SearchPreviewIn(BaseModel):
+    query: str
+    limit: int = 6
+
+
+class RetrievedChunkOut(BaseModel):
+    source: str
+    score: float
+    page: int | None = None
+    heading: str | None = None
+    snippet: str
+
+
+class SearchPreviewOut(BaseModel):
+    domain: str
+    query: str
+    results: list[RetrievedChunkOut]
+
+
 # --- Health ---------------------------------------------------------------- #
 class HealthOut(BaseModel):
     status: str               # "ok" | "degraded"

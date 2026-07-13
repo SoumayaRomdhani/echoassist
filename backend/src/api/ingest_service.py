@@ -18,6 +18,8 @@ from pathlib import Path, PurePosixPath
 
 from src.rag.ingest import IngestReport, ingest
 from src.rag.loaders import SUPPORTED_SUFFIXES
+from src.rag.metadata import utc_iso
+from src.rag.types import ScoredChunk
 
 log = logging.getLogger("echoassist.api.ingest")
 
@@ -30,6 +32,10 @@ _READ_CHUNK = 1024 * 1024                      # 1 MiB read granularity
 Indexer = Callable[[Path, str], IngestReport]
 # (domain, source) -> number of chunks removed from the vector store.
 Deleter = Callable[[str, str], int]
+# domain -> {source: chunk_count} for the document list.
+Counter = Callable[[str], dict[str, int]]
+# (domain, query, limit) -> retrieved chunks, for the retrieval-preview panel.
+Searcher = Callable[[str, str, int], list[ScoredChunk]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +43,14 @@ class DeleteReport:
     filename: str
     file_removed: bool      # the document file was present on disk and deleted
     chunks_removed: int     # vectors purged from the collection
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentInfo:
+    source: str
+    size_bytes: int
+    modified_at: str
+    chunks: int | None      # None when the chunk count is unavailable (store unreachable)
 
 
 class UnsupportedDocument(ValueError):
@@ -66,6 +80,8 @@ class IngestService:
         indexer: Indexer,
         deleter: Deleter | None = None,
         reindexer: Indexer | None = None,
+        counter: Counter | None = None,
+        searcher: Searcher | None = None,
         lock: asyncio.Lock | None = None,
         max_upload_bytes: int = _DEFAULT_MAX_UPLOAD_BYTES,
     ) -> None:
@@ -73,6 +89,8 @@ class IngestService:
         self._indexer = indexer
         self._deleter = deleter
         self._reindexer = reindexer
+        self._counter = counter
+        self._searcher = searcher
         self._lock = lock or asyncio.Lock()
         self._max_upload_bytes = max_upload_bytes
 
@@ -204,6 +222,45 @@ class IngestService:
         )
         return report
 
+    async def list_documents(self, domain: str) -> list[DocumentInfo]:
+        """List a domain's document files (size, mtime) with their chunk counts.
+
+        Chunk counts are best-effort: if the store is unreachable the files still list
+        (with ``chunks=None``), so you can always see and manage what's on disk.
+        """
+        counts: dict[str, int] = {}
+        if self._counter is not None:
+            try:
+                counts = await asyncio.to_thread(self._counter, domain)
+            except Exception as exc:  # noqa: BLE001 - counts are optional; never fail the listing
+                log.warning("chunk counts unavailable for domain %s: %s", domain, exc)
+
+        docs_dir = self.docs_dir(domain)
+        infos: list[DocumentInfo] = []
+        if docs_dir.exists():
+            for path in sorted(docs_dir.rglob("*")):
+                if not (path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES):
+                    continue
+                source = path.relative_to(docs_dir).as_posix()
+                stat = path.stat()
+                infos.append(
+                    DocumentInfo(
+                        source=source,
+                        size_bytes=stat.st_size,
+                        modified_at=utc_iso(stat.st_mtime),
+                        chunks=counts.get(source),
+                    )
+                )
+        return infos
+
+    async def search(self, domain: str, query: str, limit: int) -> list[ScoredChunk]:
+        """Run the domain retriever for a test query (the retrieval-preview panel)."""
+        if self._searcher is None:
+            raise RuntimeError("searcher is not configured")
+        # Retrieval loads FastEmbed/cross-encoder models — serialize on the shared lock.
+        async with self._lock:
+            return await asyncio.to_thread(self._searcher, domain, query, limit)
+
 
 def default_indexer(
     build_embedder: Callable[[], object],
@@ -255,3 +312,22 @@ def default_deleter(build_store: Callable[[str], object]) -> Deleter:
         return store.delete_document(source)  # type: ignore[attr-defined]
 
     return delete
+
+
+def default_counter(build_store: Callable[[str], object]) -> Counter:
+    """Build the production counter: chunks-per-source from the domain's collection."""
+
+    def count(domain: str) -> dict[str, int]:
+        return build_store(domain).chunk_counts()  # type: ignore[attr-defined]
+
+    return count
+
+
+def default_searcher(build_retriever: Callable[[str], object]) -> Searcher:
+    """Build the production searcher: run the domain retriever for a preview query."""
+
+    def search(domain: str, query: str, limit: int) -> list[ScoredChunk]:
+        retriever = build_retriever(domain)
+        return retriever.retrieve(query)[:limit]  # type: ignore[attr-defined]
+
+    return search
