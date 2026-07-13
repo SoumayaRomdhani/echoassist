@@ -11,6 +11,7 @@ Pipeline (ARCHITECTURE.md §4, ROADMAP §Sprint 2):
 from __future__ import annotations
 
 import logging
+import re
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
@@ -23,6 +24,8 @@ from src.rag.vectorstore import VectorStore
 
 log = logging.getLogger("echoassist.rag.retriever")
 
+_WORD = re.compile(r"\w+")
+
 
 def reciprocal_rank_fusion(rankings: list[list[str]], *, k: int = 60) -> dict[str, float]:
     """Fuse ranked id lists into a combined score map. Higher score = better."""
@@ -31,6 +34,47 @@ def reciprocal_rank_fusion(rankings: list[list[str]], *, k: int = 60) -> dict[st
         for rank, item in enumerate(ranking):
             scores[item] += 1.0 / (k + rank + 1)
     return dict(scores)
+
+
+def _tokens(text: str) -> set[str]:
+    return set(_WORD.findall(text.lower()))
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def diversify(
+    scored: list[ScoredChunk],
+    *,
+    top_k: int,
+    dedup_threshold: float,
+    max_per_source: int,
+) -> list[ScoredChunk]:
+    """Pick the top ``top_k`` chunks best-first, skipping near-duplicates and (optionally)
+    capping how many come from one source.
+
+    Boilerplate that repeats across a document (page headers/footers, a section restated
+    on every page) surfaces as several near-identical chunks that would otherwise fill the
+    result set; dropping them backfills the freed slots with distinct, lower-ranked chunks.
+    """
+    selected: list[ScoredChunk] = []
+    seen_tokens: list[set[str]] = []
+    per_source: dict[str, int] = defaultdict(int)
+    for candidate in scored:
+        if len(selected) >= top_k:
+            break
+        if max_per_source and per_source[candidate.chunk.source] >= max_per_source:
+            continue
+        tokens = _tokens(candidate.chunk.text)
+        if any(_jaccard(tokens, other) >= dedup_threshold for other in seen_tokens):
+            continue
+        selected.append(candidate)
+        seen_tokens.append(tokens)
+        per_source[candidate.chunk.source] += 1
+    return selected
 
 
 class Retriever:
@@ -43,6 +87,8 @@ class Retriever:
         top_k: int = 6,
         candidates: int = 20,
         rrf_k: int = 60,
+        dedup_threshold: float = 0.8,
+        max_per_source: int = 0,
     ) -> None:
         self._embedder = embedder
         self._store = store
@@ -50,6 +96,8 @@ class Retriever:
         self._top_k = top_k
         self._candidates = candidates
         self._rrf_k = rrf_k
+        self._dedup_threshold = dedup_threshold  # Jaccard >= this => near-duplicate (>1 disables)
+        self._max_per_source = max_per_source    # 0 => no per-source cap
 
     def retrieve(self, query: str) -> list[ScoredChunk]:
         # Stage span — never put the query text in attributes (it can carry PII).
@@ -89,13 +137,14 @@ class Retriever:
             # gracefully to the RRF-fused order. ranked_ids is already sorted by RRF, so we keep
             # that ranking and use the RRF score for the grounding gate.
             log.warning("reranker failed (%s); falling back to RRF-fused order", exc)
-            return [
+            fallback = [
                 ScoredChunk(
                     chunk=chunks[cid], score=fused[cid],
                     components={"rrf": fused[cid], "rerank": None},
                 )
-                for cid in ranked_ids
-            ][: self._top_k]
+                for cid in ranked_ids  # already in RRF order
+            ]
+            return self._diversify(fallback)
 
         scored = [
             ScoredChunk(
@@ -106,4 +155,12 @@ class Retriever:
             for i, cid in enumerate(ranked_ids)
         ]
         scored.sort(key=lambda sc: sc.score, reverse=True)
-        return scored[: self._top_k]
+        return self._diversify(scored)
+
+    def _diversify(self, scored: list[ScoredChunk]) -> list[ScoredChunk]:
+        return diversify(
+            scored,
+            top_k=self._top_k,
+            dedup_threshold=self._dedup_threshold,
+            max_per_source=self._max_per_source,
+        )

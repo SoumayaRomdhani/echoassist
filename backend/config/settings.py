@@ -204,6 +204,11 @@ class Settings(BaseSettings):
     rag_top_k: int = 6          # chunks returned after rerank
     rag_candidates: int = 20    # candidates per modality before fusion/rerank
     rrf_k: int = 60             # Reciprocal Rank Fusion constant
+    # De-duplication of the final results: drop a chunk whose word-overlap (Jaccard) with an
+    # already-selected one is >= this, so repeated boilerplate doesn't fill the result set.
+    # Set > 1.0 to disable. rag_max_per_source caps chunks from one document (0 = no cap).
+    rag_dedup_threshold: float = 0.8
+    rag_max_per_source: int = 0
     chunk_size: int = 1200
     chunk_overlap: int = 150
     # Reject knowledge-base uploads larger than this (bytes); the route enforces it
@@ -481,6 +486,8 @@ def build_retriever(settings: Settings | None = None, *, domain: str | None = No
         top_k=settings.rag_top_k,
         candidates=settings.rag_candidates,
         rrf_k=settings.rrf_k,
+        dedup_threshold=settings.rag_dedup_threshold,
+        max_per_source=settings.rag_max_per_source,
     )
 
 
