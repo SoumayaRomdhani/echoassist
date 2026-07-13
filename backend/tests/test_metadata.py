@@ -75,6 +75,8 @@ def test_heading_breadcrumb() -> None:
     assert heading_breadcrumb(()) == ""
 
 
-def test_parser_version_bumped_for_structure_aware_chunking() -> None:
-    # Extraction + chunking changed, so the version must move off "1.0" to force re-index.
-    assert PARSER_VERSION != "1.0"
+def test_parser_version_reflects_extraction_changes() -> None:
+    # Each extraction/chunking change bumps the version so stale indexes are rebuilt:
+    # 1.1 = structure-aware chunking; 1.2 = table-aware extraction.
+    assert PARSER_VERSION not in {"1.0", "1.1"}
+    assert PARSER_VERSION == "1.2"

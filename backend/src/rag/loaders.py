@@ -76,7 +76,39 @@ def _load_text(path: Path) -> list[DocumentSection]:
     return [DocumentSection(text=text)] if text else []
 
 
-# --- Markdown (heading-aware) ---------------------------------------------- #
+# --- tables (shared renderer) ---------------------------------------------- #
+def _render_table(rows: list[list[str]]) -> str:
+    """Render table rows as readable 'Header: value' lines so they survive embedding.
+
+    The first row is treated as the header; each later row becomes
+    ``Header1: cell1; Header2: cell2``. A single-row table is joined with `` | ``. Used
+    by every table-bearing format (DOCX, HTML, Markdown) so tables read the same way.
+    """
+    rows = [[cell.strip() for cell in row] for row in rows]
+    rows = [row for row in rows if any(row)]
+    if not rows:
+        return ""
+    if len(rows) == 1:
+        return " | ".join(cell for cell in rows[0] if cell)
+    header = rows[0]
+    lines: list[str] = []
+    for row in rows[1:]:
+        pairs = [f"{h}: {v}" for h, v in zip(header, row, strict=False) if v]
+        lines.append("; ".join(pairs) if pairs else " | ".join(c for c in row if c))
+    return "\n".join(line for line in lines if line)
+
+
+def _is_md_table_separator(line: str) -> bool:
+    """True for a Markdown table separator row like ``|---|:--:|`` (pipes + dashes only)."""
+    stripped = line.strip()
+    return "|" in stripped and "-" in stripped and set(stripped) <= set("|-: \t")
+
+
+def _parse_md_row(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+# --- Markdown (heading-aware, table-aware) --------------------------------- #
 _MD_HEADING = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
 _MD_FENCE = re.compile(r"^\s*(```|~~~)")
 
@@ -86,7 +118,8 @@ def _load_markdown(path: Path) -> list[DocumentSection]:
 
     Keeps each section coherent (a chunk never mixes content from two headings) and
     records the breadcrumb (``Setup > Login``) so the chunker can prefix it. Headings
-    inside fenced code blocks (```/~~~) are ignored so code comments aren't misread.
+    inside fenced code blocks (```/~~~) are ignored so code comments aren't misread, and
+    pipe-tables are rendered to clean ``Header: value`` lines instead of raw ``|---|``.
     """
     sections: list[DocumentSection] = []
     stack: list[tuple[int, str]] = []  # (heading level, title)
@@ -101,20 +134,36 @@ def _load_markdown(path: Path) -> list[DocumentSection]:
             )
         buffer.clear()
 
-    for line in _read_text(path).splitlines():
+    lines = _read_text(path).splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
         if _MD_FENCE.match(line):
             in_fence = not in_fence
             buffer.append(line)
+            i += 1
             continue
-        heading = None if in_fence else _MD_HEADING.match(line)
-        if heading:
-            flush()  # the previous section ends where a new heading begins
-            level = len(heading.group(1))
-            while stack and stack[-1][0] >= level:
-                stack.pop()
-            stack.append((level, heading.group(2).strip()))
-        else:
-            buffer.append(line)
+        if not in_fence:
+            heading = _MD_HEADING.match(line)
+            if heading:
+                flush()  # the previous section ends where a new heading begins
+                level = len(heading.group(1))
+                while stack and stack[-1][0] >= level:
+                    stack.pop()
+                stack.append((level, heading.group(2).strip()))
+                i += 1
+                continue
+            # A header row followed by a separator row starts a pipe-table.
+            if "|" in line and i + 1 < len(lines) and _is_md_table_separator(lines[i + 1]):
+                rows = [_parse_md_row(line)]
+                i += 2
+                while i < len(lines) and "|" in lines[i] and not _MD_FENCE.match(lines[i]):
+                    rows.append(_parse_md_row(lines[i]))
+                    i += 1
+                buffer.append(_render_table(rows))
+                continue
+        buffer.append(line)
+        i += 1
     flush()
     return sections
 
@@ -163,19 +212,8 @@ def _iter_docx_blocks(document) -> Iterator[tuple[str, object]]:
 
 
 def _table_to_text(table) -> str:
-    """Render a table as readable 'Header: value' lines so it survives embedding."""
-    rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
-    rows = [r for r in rows if any(r)]
-    if not rows:
-        return ""
-    if len(rows) == 1:
-        return " | ".join(c for c in rows[0] if c)
-    header = rows[0]
-    lines: list[str] = []
-    for row in rows[1:]:
-        pairs = [f"{h}: {v}" for h, v in zip(header, row, strict=False) if v]
-        lines.append("; ".join(pairs) if pairs else " | ".join(c for c in row if c))
-    return "\n".join(line for line in lines if line)
+    """Render a python-docx table via the shared 'Header: value' renderer."""
+    return _render_table([[cell.text for cell in row.cells] for row in table.rows])
 
 
 def _load_docx(path: Path) -> list[DocumentSection]:
@@ -243,6 +281,21 @@ def _load_html(path: Path) -> list[DocumentSection]:
     soup = BeautifulSoup(_read_text(path), "html.parser")
     for tag in soup(["script", "style"]):
         tag.decompose()
+
+    # Render each (non-nested) <table> to clean 'Header: value' text in place, so its
+    # cells are captured in document order instead of being dropped with the raw markup.
+    for table in [t for t in soup.find_all("table") if not t.find_parent("table")]:
+        rows = [
+            [cell.get_text(" ", strip=True) for cell in tr.find_all(["td", "th"])]
+            for tr in table.find_all("tr")
+        ]
+        rendered = _render_table(rows)
+        if rendered:
+            replacement = soup.new_tag("p")
+            replacement.string = rendered
+            table.replace_with(replacement)
+        else:
+            table.decompose()
 
     sections: list[DocumentSection] = []
     stack: list[tuple[int, str]] = []

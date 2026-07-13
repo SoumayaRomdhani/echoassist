@@ -24,7 +24,8 @@ from pathlib import Path
 
 # Bump when extraction/chunking changes enough that indexes should be rebuilt.
 # 1.1: heading-aware Markdown sections + structure-aware chunking + heading-breadcrumb prefix.
-PARSER_VERSION = "1.1"
+# 1.2: table-aware extraction (HTML/Markdown tables rendered to 'Header: value' text).
+PARSER_VERSION = "1.2"
 
 # Stable namespace so the same filename always maps to the same doc_id (lets the
 # lifecycle layer delete/replace a document's chunks by id).

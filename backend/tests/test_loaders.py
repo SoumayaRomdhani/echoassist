@@ -119,6 +119,52 @@ def test_html_is_heading_aware(tmp_path: Path) -> None:
     assert all("ignore()" not in s.text for s in sections)  # script stripped
 
 
+def test_html_table_cells_are_rendered_not_dropped(tmp_path: Path) -> None:
+    pytest.importorskip("bs4")
+    html = tmp_path / "plans.htm"
+    html.write_text(
+        "<h1>Plans</h1>"
+        "<table><tr><th>Plan</th><th>Cost</th></tr>"
+        "<tr><td>Gold</td><td>100</td></tr><tr><td>Silver</td><td>50</td></tr></table>",
+        encoding="utf-8",
+    )
+    text = " ".join(s.text for s in extract(html))
+    assert "Plan: Gold; Cost: 100" in text     # cells rendered, not lost with the markup
+    assert "Plan: Silver; Cost: 50" in text
+
+
+# --- tables (shared renderer) ---------------------------------------------- #
+def test_render_table_formats_rows_as_header_values() -> None:
+    from src.rag.loaders import _render_table
+
+    assert _render_table([["Plan", "Cost"], ["Gold", "100"], ["Silver", "50"]]) == (
+        "Plan: Gold; Cost: 100\nPlan: Silver; Cost: 50"
+    )
+    assert _render_table([["only", "one", "row"]]) == "only | one | row"
+    assert _render_table([]) == ""
+    assert _render_table([["A", "B"], ["1"]]) == "A: 1"          # ragged row is safe
+
+
+def test_markdown_pipe_table_is_rendered(tmp_path: Path) -> None:
+    md = tmp_path / "pricing.md"
+    md.write_text(
+        "# Pricing\n\n| Plan | Cost |\n|------|------|\n| Gold | 100 |\n| Silver | 50 |\n",
+        encoding="utf-8",
+    )
+    [section] = extract(md)
+    assert section.heading_path == ("Pricing",)
+    assert "Plan: Gold; Cost: 100" in section.text
+    assert "Plan: Silver; Cost: 50" in section.text
+    assert "|---" not in section.text                            # raw separator syntax gone
+
+
+def test_markdown_pipe_inside_code_fence_is_not_a_table(tmp_path: Path) -> None:
+    md = tmp_path / "guide.md"
+    md.write_text("# G\n\n```\ncol_a | col_b\n---\n```\n", encoding="utf-8")
+    [section] = extract(md)
+    assert "col_a | col_b" in section.text                       # left as code, not rendered
+
+
 # --- dispatch --------------------------------------------------------------- #
 def test_unsupported_suffix_raises(tmp_path: Path) -> None:
     bad = tmp_path / "malware.exe"
