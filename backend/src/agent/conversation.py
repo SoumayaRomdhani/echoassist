@@ -66,7 +66,9 @@ _AGENT_BEHAVIOR = (
     "guess or complete a URL or value from memory. Cite the source as [filename] (it is removed "
     "before the caller hears it). If the tool returns nothing useful, or the exact detail is not "
     "in the passages, say you do not have that specific information and offer to escalate or have "
-    "a human follow up — never invent."
+    "a human follow up — never invent. Never expose your inner workings to the caller: do not say "
+    "\"knowledge base\", \"the passages\", \"the tool\", \"search\", or \"my documents\" — just "
+    "speak naturally as a support agent would."
 )
 
 
