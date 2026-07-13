@@ -46,33 +46,38 @@ def _jaccard(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(a | b)
 
 
-def diversify(
-    scored: list[ScoredChunk],
-    *,
-    top_k: int,
-    dedup_threshold: float,
-    max_per_source: int,
+def dedup_near_duplicates(
+    scored: list[ScoredChunk], *, threshold: float
 ) -> list[ScoredChunk]:
-    """Pick the top ``top_k`` chunks best-first, skipping near-duplicates and (optionally)
-    capping how many come from one source.
+    """Drop chunks whose word-overlap (Jaccard) with an already-kept one is >= ``threshold``.
 
-    Boilerplate that repeats across a document (page headers/footers, a section restated
-    on every page) surfaces as several near-identical chunks that would otherwise fill the
-    result set; dropping them backfills the freed slots with distinct, lower-ranked chunks.
+    Order is preserved. Run this on the *whole* fused candidate pool **before** the rerank
+    cutoff, so repeated boilerplate (page headers/footers) can't fill the head of the list
+    and starve the rerank pool of distinct chunks — the distinct ones below simply move up.
     """
-    selected: list[ScoredChunk] = []
+    kept: list[ScoredChunk] = []
     seen_tokens: list[set[str]] = []
+    for candidate in scored:
+        tokens = _tokens(candidate.chunk.text)
+        if any(_jaccard(tokens, other) >= threshold for other in seen_tokens):
+            continue
+        kept.append(candidate)
+        seen_tokens.append(tokens)
+    return kept
+
+
+def cap_per_source(
+    scored: list[ScoredChunk], *, top_k: int, max_per_source: int
+) -> list[ScoredChunk]:
+    """Take the top ``top_k`` chunks, optionally capping how many come from one source."""
+    selected: list[ScoredChunk] = []
     per_source: dict[str, int] = defaultdict(int)
     for candidate in scored:
         if len(selected) >= top_k:
             break
         if max_per_source and per_source[candidate.chunk.source] >= max_per_source:
             continue
-        tokens = _tokens(candidate.chunk.text)
-        if any(_jaccard(tokens, other) >= dedup_threshold for other in seen_tokens):
-            continue
         selected.append(candidate)
-        seen_tokens.append(tokens)
         per_source[candidate.chunk.source] += 1
     return selected
 
@@ -86,6 +91,7 @@ class Retriever:
         *,
         top_k: int = 6,
         candidates: int = 20,
+        rerank_candidates: int = 12,
         rrf_k: int = 60,
         dedup_threshold: float = 0.8,
         max_per_source: int = 0,
@@ -95,6 +101,9 @@ class Retriever:
         self._reranker = reranker
         self._top_k = top_k
         self._candidates = candidates
+        # The cross-encoder is the CPU-heavy step; rerank only the top fused candidates
+        # (not all ``candidates``) to cut latency while keeping fusion's recall breadth.
+        self._rerank_candidates = rerank_candidates
         self._rrf_k = rrf_k
         self._dedup_threshold = dedup_threshold  # Jaccard >= this => near-duplicate (>1 disables)
         self._max_per_source = max_per_source    # 0 => no per-source cap
@@ -125,42 +134,48 @@ class Retriever:
             [[h.chunk.id for h in dense_hits], [h.chunk.id for h in sparse_hits]],
             k=self._rrf_k,
         )
-        ranked_ids = sorted(fused, key=fused.get, reverse=True)[: self._candidates]
+        fused_ranked = sorted(fused, key=fused.get, reverse=True)[: self._candidates]
+        # Dedup the WHOLE fused pool before the rerank cutoff, so leading duplicates don't
+        # starve the rerank pool — distinct lower-ranked chunks move up to fill the freed
+        # slots. Only then take the top few distinct candidates for the CPU-heavy rerank.
+        distinct = dedup_near_duplicates(
+            [
+                ScoredChunk(
+                    chunk=chunks[cid], score=fused[cid],
+                    components={"rrf": fused[cid], "rerank": None},
+                )
+                for cid in fused_ranked
+            ],
+            threshold=self._dedup_threshold,
+        )
+        rerank_pool = distinct[: self._rerank_candidates]
 
-        passages = [chunks[cid].text for cid in ranked_ids]
+        passages = [sc.chunk.text for sc in rerank_pool]
         try:
             with latency.span("rag_rerank_ms"):
                 rerank_scores = self._reranker.rerank(query, passages)
         except Exception as exc:  # noqa: BLE001 — reranker resilience: never fail a live turn
             # A cloud reranker (e.g. Voyage free tier: 3 RPM) can rate-limit or go down. Rather
             # than error the whole turn — which surfaces to the caller as a refusal — degrade
-            # gracefully to the RRF-fused order. ranked_ids is already sorted by RRF, so we keep
-            # that ranking and use the RRF score for the grounding gate.
+            # gracefully to the (deduped) RRF-fused order and use the RRF score for the gate.
             log.warning("reranker failed (%s); falling back to RRF-fused order", exc)
-            fallback = [
-                ScoredChunk(
-                    chunk=chunks[cid], score=fused[cid],
-                    components={"rrf": fused[cid], "rerank": None},
-                )
-                for cid in ranked_ids  # already in RRF order
-            ]
-            return self._diversify(fallback)
+            return cap_per_source(
+                distinct, top_k=self._top_k, max_per_source=self._max_per_source
+            )
 
         scored = [
             ScoredChunk(
-                chunk=chunks[cid],
+                chunk=sc.chunk,
                 score=rerank_scores[i],
-                components={"rrf": fused[cid], "rerank": rerank_scores[i]},
+                components={"rrf": sc.components["rrf"], "rerank": rerank_scores[i]},
             )
-            for i, cid in enumerate(ranked_ids)
+            for i, sc in enumerate(rerank_pool)
         ]
         scored.sort(key=lambda sc: sc.score, reverse=True)
-        return self._diversify(scored)
-
-    def _diversify(self, scored: list[ScoredChunk]) -> list[ScoredChunk]:
-        return diversify(
-            scored,
-            top_k=self._top_k,
-            dedup_threshold=self._dedup_threshold,
-            max_per_source=self._max_per_source,
+        # The reranked chunks come first (best signal); the remaining distinct candidates
+        # below the rerank cutoff follow (RRF order) as backfill, so the per-source cap can
+        # reach other sources instead of starving the result when the pool is single-source.
+        backfill = distinct[self._rerank_candidates :]
+        return cap_per_source(
+            scored + backfill, top_k=self._top_k, max_per_source=self._max_per_source
         )

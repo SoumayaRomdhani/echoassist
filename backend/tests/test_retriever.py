@@ -115,6 +115,34 @@ def test_retrieve_keeps_distinct_chunks() -> None:
     assert [r.chunk.id for r in retriever.retrieve("x")] == ["a", "b"]
 
 
+def test_leading_duplicates_do_not_starve_top_k_after_rerank_cutoff() -> None:
+    """12 near-identical chunks ahead of the unique ones must not collapse the result to 1.
+
+    Dedup runs on the full fused pool *before* the rerank cutoff, so the distinct chunks
+    below position 12 move up into the rerank pool instead of being dropped.
+    """
+    dups = [
+        ScoredChunk(
+            _tchunk(f"dup{i}", "the same repeated boilerplate header line for the guide"), 1.0
+        )
+        for i in range(12)
+    ]
+    uniques = [
+        ScoredChunk(_tchunk(f"u{i}", f"unique distinct passage number {i} on subject {i}"), 0.5)
+        for i in range(6)
+    ]
+    reranker = FakeReranker({})  # neutral: preserves the deduped pool order
+
+    retriever = Retriever(
+        FakeEmbedder(), FakeStore(dups + uniques, []), reranker,
+        top_k=6, candidates=20, rerank_candidates=12,
+    )
+    ids = [r.chunk.id for r in retriever.retrieve("x")]
+    assert len(ids) == 6                                   # not starved down to 1
+    assert ids.count("dup0") == 1 and not any(i.startswith("dup") and i != "dup0" for i in ids)
+    assert len([i for i in ids if i.startswith("u")]) == 5  # uniques backfilled the freed slots
+
+
 def test_retrieve_respects_max_per_source() -> None:
     a1 = _tchunk("a1", "alpha content about the very first distinct topic", source="a.md")
     a2 = _tchunk("a2", "beta material covering a completely separate second topic", source="a.md")
@@ -127,6 +155,71 @@ def test_retrieve_respects_max_per_source() -> None:
     )
     ids = [r.chunk.id for r in retriever.retrieve("x")]
     assert ids == ["a1", "b1"]  # a2 skipped by the per-source cap; b1 (other source) fills in
+
+
+def test_per_source_cap_backfills_from_distinct_below_rerank_cutoff() -> None:
+    """A single-source rerank pool must not starve the cap — backfill from sources below it.
+
+    12 distinct chunks from a.md fill the rerank pool; six other sources sit below the
+    cutoff. With max_per_source=1 the result should still reach top_k by pulling them in.
+    """
+    a = [
+        ScoredChunk(
+            _tchunk(f"a{i}", f"alpha content number {i} on a distinct topic {i}", source="a.md"),
+            1.0,
+        )
+        for i in range(12)
+    ]
+    others = [
+        ScoredChunk(
+            _tchunk(
+                f"b{i}", f"other content number {i} on a distinct topic {i}", source=f"b{i}.md"
+            ),
+            0.5,
+        )
+        for i in range(6)
+    ]
+    reranker = FakeReranker({})  # neutral order
+
+    retriever = Retriever(
+        FakeEmbedder(), FakeStore(a + others, []), reranker,
+        top_k=6, candidates=20, rerank_candidates=12, max_per_source=1,
+    )
+    ids = [r.chunk.id for r in retriever.retrieve("x")]
+    assert len(ids) == 6                                   # not starved down to 1
+    assert sum(1 for i in ids if i.startswith("a")) == 1   # a.md capped at 1
+    assert len([i for i in ids if i.startswith("b")]) == 5  # backfilled from other sources
+
+
+class _RecordingReranker(Reranker):
+    """Records how many passages it was asked to score."""
+
+    def __init__(self) -> None:
+        self.scored_count: int | None = None
+
+    def rerank(self, query, passages):
+        self.scored_count = len(passages)
+        return [float(len(passages) - i) for i in range(len(passages))]
+
+
+def test_reranker_only_scores_the_top_fused_candidates() -> None:
+    # 10 distinct candidates fused, but only the top 4 should reach the cross-encoder.
+    dense = [
+        ScoredChunk(
+            _tchunk(f"c{i}", f"distinct passage number {i} about subject {i}"), 1.0 / (i + 1)
+        )
+        for i in range(10)
+    ]
+    reranker = _RecordingReranker()
+    retriever = Retriever(
+        FakeEmbedder(), FakeStore(dense, []), reranker,
+        top_k=3, candidates=10, rerank_candidates=4,
+    )
+    results = retriever.retrieve("anything")
+
+    assert reranker.scored_count == 4          # only the top-4 fused were reranked, not all 10
+    assert len(results) == 3                    # top_k still returned from the reranked subset
+    assert [r.chunk.id for r in results] == ["c0", "c1", "c2"]
 
 
 def test_retrieve_falls_back_to_rrf_order_when_reranker_fails() -> None:

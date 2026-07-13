@@ -202,7 +202,10 @@ class Settings(BaseSettings):
     voyage_rerank_model: str = "rerank-2.5"    # or rerank-2.5-lite | rerank-2 (all multilingual)
     qdrant_url: str = "http://localhost:6333"
     rag_top_k: int = 6          # chunks returned after rerank
-    rag_candidates: int = 20    # candidates per modality before fusion/rerank
+    rag_candidates: int = 20    # candidates fetched per modality before fusion
+    # How many top-fused candidates the cross-encoder actually reranks. Fewer = faster
+    # (the reranker is the CPU-heavy step) at some recall cost; keep comfortably > top_k.
+    rag_rerank_candidates: int = 12
     rrf_k: int = 60             # Reciprocal Rank Fusion constant
     # De-duplication of the final results: drop a chunk whose word-overlap (Jaccard) with an
     # already-selected one is >= this, so repeated boilerplate doesn't fill the result set.
@@ -485,6 +488,7 @@ def build_retriever(settings: Settings | None = None, *, domain: str | None = No
         build_reranker(settings),
         top_k=settings.rag_top_k,
         candidates=settings.rag_candidates,
+        rerank_candidates=settings.rag_rerank_candidates,
         rrf_k=settings.rrf_k,
         dedup_threshold=settings.rag_dedup_threshold,
         max_per_source=settings.rag_max_per_source,
