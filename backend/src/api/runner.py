@@ -46,6 +46,11 @@ AudioInput = AudioChunk | AsyncIterator[AudioChunk]
 # the failover LLM) attribute a degradation event to the right call on the hub.
 current_call_id: ContextVar[str | None] = ContextVar("current_call_id", default=None)
 
+# A bridged mic/LiveKit call silent longer than this is treated as ended, so a lost
+# terminal event (hard-killed mic process) can't leave a call stuck "live" forever.
+# Generous because CPU turns are slow (STT ~15-30 s) — this only catches true drops.
+_LIVE_STALE_SECONDS = 180.0
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
@@ -98,6 +103,8 @@ class CallSession:
     started_at: datetime = field(default_factory=_now)
     ended_at: datetime | None = None
     error: str | None = None
+    external: bool = False           # driven from another process via the Redis bridge
+    last_event_at: datetime | None = None  # last bridged event (staleness safety net)
 
 
 class CallManager:
@@ -128,8 +135,27 @@ class CallManager:
         return sorted(self._sessions.values(), key=lambda s: s.started_at, reverse=True)
 
     def live(self) -> list[CallSession]:
-        """The calls running *right now* (server-started or mic/LiveKit), newest first."""
-        return [s for s in self.list() if s.ended_at is None]
+        """The calls running *right now* (server-started or mic/LiveKit), newest first.
+
+        A bridged (external) call whose terminal event was lost — e.g. the mic process
+        was hard-killed before the ``completed`` event flushed — would otherwise linger
+        as "live" forever, so one that has gone silent past ``_LIVE_STALE_SECONDS`` is
+        treated as ended. Server-started calls are owned by their task and end cleanly.
+        """
+        now = _now()
+        alive: list[CallSession] = []
+        for s in self.list():
+            if s.ended_at is not None:
+                continue
+            stale = (
+                s.external
+                and s.last_event_at is not None
+                and (now - s.last_event_at).total_seconds() > _LIVE_STALE_SECONDS
+            )
+            if stale:
+                continue
+            alive.append(s)
+        return alive
 
     # --- externally-driven sessions (the mic/LiveKit bridge) ---------------
     def register_external(self, *, call_id: str, domain: str, campaign: str) -> CallSession:
@@ -140,7 +166,10 @@ class CallManager:
         """
         session = self._sessions.get(call_id)
         if session is None:
-            session = CallSession(call_id=call_id, domain=domain, campaign=campaign)
+            session = CallSession(
+                call_id=call_id, domain=domain, campaign=campaign,
+                external=True, last_event_at=_now(),
+            )
             self._sessions[call_id] = session
         return session
 
@@ -151,6 +180,7 @@ class CallManager:
         session = self._sessions.get(call_id)
         if session is None:
             return
+        session.last_event_at = _now()
         if event_type == "status":
             status = data.get("status")
             if isinstance(status, str):

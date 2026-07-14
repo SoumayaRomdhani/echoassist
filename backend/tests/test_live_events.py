@@ -141,7 +141,7 @@ async def test_progress_omitted_when_flow_size_unknown(monkeypatch: pytest.Monke
 
 
 @pytest.mark.asyncio
-async def test_finalize_broadcasts_notes_summary_and_terminal(
+async def test_finalize_broadcasts_notes_and_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _Engine:
@@ -173,16 +173,16 @@ async def test_finalize_broadcasts_notes_summary_and_terminal(
 
     assert ("notes", {"notes": {"name": "X"}}, False) in sink.events
     assert ("summary", {"summary": "a summary"}, False) in sink.events
-    # The terminal status is always the last event and settles the dashboard.
-    assert sink.events[-1] == ("status", {"status": "completed"}, True)
+    # The terminal status is owned by run_live_session (one per exit path), not _finalize.
+    assert not any(type_ == "status" for type_, _, _ in sink.events)
 
 
 @pytest.mark.asyncio
-async def test_finalize_empty_call_still_settles_dashboard() -> None:
+async def test_finalize_empty_call_broadcasts_nothing() -> None:
     sink = RecordingSink()
     state = ConversationState(call_id="c4")  # no caller turns → nothing to persist
     await _finalize(make_settings(), None, state, completed=False, sink=sink)
-    assert sink.events == [("status", {"status": "completed"}, True)]
+    assert sink.events == []
 
 
 async def _noop_engine(_engine) -> None:

@@ -364,7 +364,6 @@ async def _finalize(
     print(bold("\n--- Interview complete ---" if completed else "\n--- Call ended ---"))
     if not any(turn["role"] == "user" for turn in state.transcript):
         print(dim("Nothing to persist — no caller turns recorded."))
-        sink.emit("status", {"status": "completed"}, terminal=True)
         return
     print(f"{bold('Filled slots:')}")
     for slot, value in state.slots.items():
@@ -392,8 +391,7 @@ async def _finalize(
         print(f"{WARN} notes/summary NOT persisted ({exc}). Needs Postgres up.")
     finally:
         await engine.dispose()
-        # Settle the dashboard whatever happened above — the call has ended.
-        sink.emit("status", {"status": "completed"}, terminal=True)
+        # The terminal status is emitted once by run_live_session on any exit path.
 
 
 async def _warm_retriever(retriever: Retriever) -> None:
@@ -513,12 +511,13 @@ async def run_live_session(
     else:
         pipeline = VoicePipeline(build_stt(settings), llm, tts, domain)
 
+    terminal_status = "completed"
     try:
         # The domain rides along on the first event so the API-side bridge can register
         # this call under the right domain (that's what makes it show in the dashboard list).
         sink.emit("status", {"status": "started", "domain": settings.domain})
         if not await _greet_and_consent(pipeline, transport, settings, call_id, sink):
-            sink.emit("status", {"status": "declined"}, terminal=True)
+            terminal_status = "declined"
             return
         if interview:
             assert state is not None
@@ -527,11 +526,13 @@ async def run_live_session(
                 filler=filler, sink=sink, call_id=call_id, domain=domain,
             )
         else:
-            try:
-                await _run_conversation(pipeline, transport, sink=sink)
-            finally:
-                sink.emit("status", {"status": "completed"}, terminal=True)
+            await _run_conversation(pipeline, transport, sink=sink)
     finally:
+        # Emit exactly one terminal event on EVERY exit — normal end, provider error, or
+        # Ctrl-C — so the dashboard never shows a call stuck "live". Emitted before the
+        # awaited cleanup below, which gives the loop a chance to flush the publish; the
+        # caller's sink.aclose() then drains it (see run_live.py).
+        sink.emit("status", {"status": terminal_status}, terminal=True)
         for task in (rag_warm_task, filler_task):
             if task is not None and not task.done():
                 task.cancel()

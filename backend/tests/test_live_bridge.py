@@ -10,12 +10,13 @@ discoverable), and the routes that surface a live call (``GET /calls`` merge +
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 
 import pytest
 
 from src.api.events import CallEventHub
 from src.api.live_bridge import LiveCallBridge
-from src.api.runner import CallManager
+from src.api.runner import CallManager, _now
 from src.telephony.events import RedisCallEventSink
 
 
@@ -109,6 +110,19 @@ def test_bridge_ignores_malformed_frames() -> None:
     bridge.dispatch(json.dumps({"type": "status"}))
     bridge.dispatch(json.dumps({"call_id": "x"}))
     assert manager.live() == []
+
+
+def test_stale_bridged_call_drops_out_of_live() -> None:
+    _, manager = _manager()
+    manager.register_external(call_id="ghost", domain="screening", campaign="camp")
+    manager.register_external(call_id="fresh", domain="screening", campaign="camp")
+
+    # A bridged call whose terminal event was lost (hard-killed mic process) goes silent.
+    manager.get("ghost").last_event_at = _now() - timedelta(seconds=999)
+
+    live_ids = [s.call_id for s in manager.live()]
+    assert "fresh" in live_ids
+    assert "ghost" not in live_ids  # aged out despite no terminal event
 
 
 @pytest.mark.asyncio
