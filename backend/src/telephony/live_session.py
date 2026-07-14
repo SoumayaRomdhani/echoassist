@@ -160,6 +160,26 @@ def _emit_transcript(
     sink.emit("transcript", data)
 
 
+def _partial_emitter(sink: CallEventSink):
+    """A per-turn ``on_partial`` callback: broadcast the caller's words *as they speak*.
+
+    Streaming STT (Deepgram) reports interim hypotheses that grow as the caller talks;
+    forwarding them as ``partial_transcript`` events lets the dashboard type the line out
+    live, so the wait never looks frozen. Consecutive duplicates are dropped. The final
+    ``transcript`` turn supersedes the partial on the UI side.
+    """
+    last = ""
+
+    def on_partial(text: str) -> None:
+        nonlocal last
+        text = text.strip()
+        if text and text != last:
+            last = text
+            sink.emit("partial_transcript", {"role": "caller", "text": text})
+
+    return on_partial
+
+
 def _progress(index: int, total: int) -> dict:
     """Question-progress fields for an ``agent_state`` event (omitted when total unknown)."""
     if total > 0:
@@ -217,7 +237,7 @@ async def _greet_and_consent(
 
     print(dim("\n[listening — the caller answers the consent question, then pauses]"))
     sink.emit("agent_state", {"state": "listening"})
-    consent = await pipeline.handle_consent(transport.listen())
+    consent = await pipeline.handle_consent(transport.listen(), on_partial=_partial_emitter(sink))
     print(
         f"\n{bold('CALLER:')} {consent.transcript or '(silence)'}  "
         f"{dim('[' + consent.decision.value + ']')}"
@@ -245,7 +265,7 @@ async def _run_conversation(
     while True:
         print(dim("\n[listening…]"))
         sink.emit("agent_state", {"state": "listening"})
-        result = await pipeline.run_turn(transport.listen())
+        result = await pipeline.run_turn(transport.listen(), on_partial=_partial_emitter(sink))
         print(f"\n{bold('CALLER:')} {result.transcript or '(silence)'}")
         _emit_transcript(sink, "caller", result.transcript)
         sink.emit("agent_state", {"state": "thinking"})
@@ -296,7 +316,7 @@ async def _run_interview(
                 # drains the stream so the turn is recorded even when interrupted. (Citations are
                 # stripped before TTS; the answer is still grounded — sources live in the notes.)
                 transcript, is_rag, audio_stream = await pipeline.interview_turn_streaming(
-                    transport.listen()
+                    transport.listen(), on_partial=_partial_emitter(sink)
                 )
                 print(f"\n{bold('CALLER:')} {transcript or '(silence)'}")
                 _emit_transcript(sink, "caller", transcript)

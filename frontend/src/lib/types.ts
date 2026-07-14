@@ -155,6 +155,7 @@ export interface SummaryOut {
 export type CallEventType =
   | 'status'
   | 'transcript'
+  | 'partial_transcript'
   | 'consent'
   | 'notes'
   | 'summary'

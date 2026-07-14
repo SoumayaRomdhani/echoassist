@@ -104,6 +104,22 @@ function stateEvent(state: string, extra: Record<string, unknown> = {}): ScriptE
   return { type: 'agent_state', data: { state, ...extra } }
 }
 
+/** Interim STT: two growing hypotheses so the caller's line types itself out live. */
+function partialEvents(text: string): ScriptEvent[] {
+  const words = text.split(' ')
+  if (words.length < 3) return []
+  const mid = Math.max(1, Math.floor(words.length / 2))
+  return [words.slice(0, mid), words.slice(0, words.length - 1)].map((w) => ({
+    type: 'partial_transcript',
+    data: { role: 'caller', text: w.join(' ') },
+  }))
+}
+
+/** A caller turn on the wire: interim partials typing out, then the finalized turn. */
+function callerTurnEvents(turn: Turn): ScriptEvent[] {
+  return [...partialEvents(turn.text), transcriptEvent(turn)]
+}
+
 /**
  * Expand a scenario into the wire event sequence, interleaving `agent_state`
  * events so the live orb animates through listening → thinking → speaking exactly
@@ -116,7 +132,7 @@ function toEvents(scenario: Scenario): ScriptEvent[] {
 
   // turns[0..2] = disclosure (agent), consent answer (caller), acknowledgement (agent).
   events.push(stateEvent('speaking'), transcriptEvent(scenario.turns[0]))
-  events.push(stateEvent('listening'), transcriptEvent(scenario.turns[1]))
+  events.push(stateEvent('listening'), ...callerTurnEvents(scenario.turns[1]))
   events.push(stateEvent('thinking'), stateEvent('speaking'), transcriptEvent(scenario.turns[2]))
   events.push({
     type: 'consent',
@@ -142,7 +158,7 @@ function toEvents(scenario: Scenario): ScriptEvent[] {
         transcriptEvent(turn),
       )
     } else {
-      events.push(stateEvent('listening'), transcriptEvent(turn), stateEvent('thinking'))
+      events.push(stateEvent('listening'), ...callerTurnEvents(turn), stateEvent('thinking'))
     }
   }
 

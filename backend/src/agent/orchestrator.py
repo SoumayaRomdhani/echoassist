@@ -133,12 +133,13 @@ class VoicePipeline:
         text = self._domain.disclosure
         return text, await self._say(text)
 
-    async def handle_consent(self, audio) -> ConsentTurn:
+    async def handle_consent(self, audio, *, on_partial=None) -> ConsentTurn:
         """Process the caller's answer to the consent question.
 
-        ``audio`` is an :class:`AudioChunk` or an async iterator of them.
+        ``audio`` is an :class:`AudioChunk` or an async iterator of them. ``on_partial``
+        (optional) receives interim transcripts for a live UI (see ``STTProvider.transcribe``).
         """
-        transcript = await self._stt.transcribe(audio)
+        transcript = await self._stt.transcribe(audio, on_partial=on_partial)
         self._history.append(Message(Role.USER, transcript.text))
         decision = classify_consent(transcript.text)
         log.info("consent: decision=%s transcript=%r", decision.value, transcript.text)
@@ -161,16 +162,17 @@ class VoicePipeline:
         audio_out = await self._say(reply)
         return ConsentTurn(transcript.text, decision, reply, audio_out, proceed, ended)
 
-    async def run_turn(self, audio) -> TurnResult:
+    async def run_turn(self, audio, *, on_partial=None) -> TurnResult:
         """Process one interview utterance: transcribe, answer, synthesize the reply.
 
         Only valid after consent is granted; calling it earlier is a programming error.
+        ``on_partial`` (optional) receives interim transcripts for a live UI.
         """
         if not self._consent_granted:
             raise RuntimeError("run_turn() called before consent was granted")
 
         t0 = time.perf_counter()
-        transcript = await self._stt.transcribe(audio)
+        transcript = await self._stt.transcribe(audio, on_partial=on_partial)
         t1 = time.perf_counter()
 
         self._history.append(Message(Role.USER, transcript.text))
@@ -232,21 +234,22 @@ class VoicePipeline:
         return self._dialogue is not None and self._dialogue.finished
 
     async def interview_turn_streaming(
-        self, audio
+        self, audio, *, on_partial=None
     ) -> tuple[str, bool, AsyncIterator[AudioChunk]]:
         """Streaming interview turn: returns (caller transcript, is_rag, agent audio stream).
 
         ``is_rag`` is resolved (classify + plan) before the slow retrieval, so a live caller
         can cover the wait with a filler on grounded turns only — it never changes what the
         caller hears. After consuming the stream, ``interview_finished`` tells you whether the
-        interview ended and the recorded reply is in the call state.
+        interview ended and the recorded reply is in the call state. ``on_partial`` (optional)
+        receives interim transcripts so the UI can show the caller's words as they speak.
         """
         from src.agent.grounding import strip_citations
         from src.agent.streaming import synthesize_streaming
 
         self._require_interview_ready()
         with latency.span("stt_ms"):
-            transcript = await self._stt.transcribe(audio)
+            transcript = await self._stt.transcribe(audio, on_partial=on_partial)
         latency.event("stt_done")
         latency.observe(transcript_length=len(transcript.text))
         is_rag, text_stream = await self._dialogue.begin_streaming_turn(transcript.text)

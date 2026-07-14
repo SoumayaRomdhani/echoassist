@@ -68,6 +68,22 @@ describe('foldEvent', () => {
     expect(state.volume).toBeNull()
   })
 
+  it('shows the caller partial live, then the final turn supersedes it', () => {
+    let state = initialLiveState
+    state = foldEvent(state, event({ type: 'partial_transcript', data: { role: 'caller', text: 'I have five' } }))
+    expect(state.partialCaller).toBe('I have five')
+    expect(state.turns).toHaveLength(0)
+
+    state = foldEvent(state, event({ type: 'partial_transcript', data: { role: 'caller', text: 'I have five years' } }))
+    expect(state.partialCaller).toBe('I have five years')
+
+    // The finalized turn lands and clears the partial.
+    state = foldEvent(state, event({ type: 'transcript', data: { role: 'caller', text: 'I have five years.' } }))
+    expect(state.partialCaller).toBeNull()
+    expect(state.turns).toHaveLength(1)
+    expect(state.turns[0].text).toBe('I have five years.')
+  })
+
   it('settles the agent orb to idle when the call ends', () => {
     let state = foldEvent(initialLiveState, event({ type: 'agent_state', data: { state: 'speaking' } }))
     expect(state.agentState).toBe('speaking')

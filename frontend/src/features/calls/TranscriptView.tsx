@@ -10,12 +10,21 @@ function speakerLabel(role: string): string {
   return role || 'Unknown'
 }
 
-export function TranscriptView({ turns, live }: { turns: TranscriptTurnOut[]; live?: boolean }) {
+export function TranscriptView({
+  turns,
+  live,
+  partial,
+}: {
+  turns: TranscriptTurnOut[]
+  live?: boolean
+  /** The caller's words as they speak (interim STT), shown as a live typing bubble. */
+  partial?: string | null
+}) {
   const endRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [turns.length])
+  }, [turns.length, partial])
 
   return (
     <div className="flex h-full flex-col rounded-2xl border border-border bg-surface">
@@ -32,7 +41,7 @@ export function TranscriptView({ turns, live }: { turns: TranscriptTurnOut[]; li
       </div>
 
       <div className="max-h-[62vh] flex-1 space-y-4 overflow-y-auto p-5 scrollbar-thin">
-        {turns.length === 0 ? (
+        {turns.length === 0 && !partial ? (
           <p className="py-10 text-center text-sm text-muted">
             {live ? 'Waiting for the first turn…' : 'No transcript available.'}
           </p>
@@ -76,6 +85,22 @@ export function TranscriptView({ turns, live }: { turns: TranscriptTurnOut[]; li
             )
           })
         )}
+        {partial ? (
+          <div className="flex flex-row-reverse gap-3">
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-foreground/[0.08] text-foreground">
+              <User className="size-4" />
+            </div>
+            <div className="max-w-[80%] rounded-2xl bg-accent/10 px-4 py-2.5 text-sm opacity-70">
+              <p className="mb-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
+                Caller
+              </p>
+              <p className="leading-relaxed">
+                {partial}
+                <span className="ml-0.5 inline-block h-4 w-px translate-y-0.5 animate-pulse bg-current" />
+              </p>
+            </div>
+          </div>
+        ) : null}
         <div ref={endRef} />
       </div>
     </div>

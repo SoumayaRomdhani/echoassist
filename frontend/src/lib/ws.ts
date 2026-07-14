@@ -29,6 +29,8 @@ export interface LiveCallState {
   volume: number | null
   /** Structured-interview progress, when known. */
   progress: CallProgress | null
+  /** The caller's words as they speak (interim STT), shown until the final turn lands. */
+  partialCaller: string | null
 }
 
 export const initialLiveState: LiveCallState = {
@@ -44,6 +46,7 @@ export const initialLiveState: LiveCallState = {
   agentState: 'idle',
   volume: null,
   progress: null,
+  partialCaller: null,
 }
 
 const AGENT_STATES: readonly AgentState[] = ['idle', 'listening', 'thinking', 'speaking']
@@ -70,8 +73,9 @@ export function foldEvent(state: LiveCallState, event: CallEvent): LiveCallState
         ...state,
         status: (event.data.status as CallStatus | undefined) ?? state.status,
         done,
-        // A finished call has no active agent phase — settle the orb.
+        // A finished call has no active agent phase — settle the orb, drop any partial.
         agentState: done ? 'idle' : state.agentState,
+        partialCaller: done ? null : state.partialCaller,
       }
     }
     case 'agent_state': {
@@ -94,8 +98,11 @@ export function foldEvent(state: LiveCallState, event: CallEvent): LiveCallState
         text: String(event.data.text ?? ''),
         ...(citations ? { citations } : {}),
       }
-      return { ...state, turns: [...state.turns, turn] }
+      // The finalized turn supersedes any interim partial for that speaker.
+      return { ...state, turns: [...state.turns, turn], partialCaller: null }
     }
+    case 'partial_transcript':
+      return { ...state, partialCaller: String(event.data.text ?? '') || null }
     case 'consent':
       return {
         ...state,

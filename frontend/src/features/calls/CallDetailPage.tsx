@@ -113,7 +113,11 @@ export function CallDetailPage({ callId, onBack }: { callId: string; onBack: () 
                 progress={live.progress}
               />
             ) : null}
-            <TranscriptView turns={turns} live={showLive} />
+            <TranscriptView
+              turns={turns}
+              live={showLive}
+              partial={showLive ? live.partialCaller : null}
+            />
           </div>
           <div className="space-y-6">
             <NotesPanel notes={notes} />
