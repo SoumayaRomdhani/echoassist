@@ -160,6 +160,15 @@ export type CallEventType =
   | 'summary'
   | 'degraded'
   | 'error'
+  | 'agent_state'
+
+/**
+ * The agent's live turn phase, surfaced by the `agent_state` event so the UI can
+ * render an ambient indicator (orb) and status text. Mirrors the phases a voice
+ * pipeline moves through each turn: waiting for the caller (`listening`), running
+ * STT/LLM/RAG (`thinking`), playing the reply (`speaking`), or between turns (`idle`).
+ */
+export type AgentState = 'idle' | 'listening' | 'thinking' | 'speaking'
 
 export interface CallEvent {
   call_id: string

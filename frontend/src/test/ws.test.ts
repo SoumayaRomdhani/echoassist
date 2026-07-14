@@ -45,4 +45,34 @@ describe('foldEvent', () => {
     expect(state.error).toEqual({ message: 'boom', persisted: true })
     expect(state.done).toBe(true)
   })
+
+  it('tracks agent state, volume and interview progress', () => {
+    let state = initialLiveState
+    expect(state.agentState).toBe('idle')
+
+    state = foldEvent(
+      state,
+      event({
+        type: 'agent_state',
+        data: { state: 'speaking', volume: 0.7, question_index: 2, question_total: 5 },
+      }),
+    )
+    expect(state.agentState).toBe('speaking')
+    expect(state.volume).toBe(0.7)
+    expect(state.progress).toEqual({ index: 2, total: 5 })
+
+    // An unknown state is ignored; progress persists when the next event omits it.
+    state = foldEvent(state, event({ type: 'agent_state', data: { state: 'bogus' } }))
+    expect(state.agentState).toBe('speaking')
+    expect(state.progress).toEqual({ index: 2, total: 5 })
+    expect(state.volume).toBeNull()
+  })
+
+  it('settles the agent orb to idle when the call ends', () => {
+    let state = foldEvent(initialLiveState, event({ type: 'agent_state', data: { state: 'speaking' } }))
+    expect(state.agentState).toBe('speaking')
+    state = foldEvent(state, event({ type: 'status', data: { status: 'completed' }, terminal: true }))
+    expect(state.agentState).toBe('idle')
+    expect(state.done).toBe(true)
+  })
 })

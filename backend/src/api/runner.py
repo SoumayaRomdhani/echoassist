@@ -127,6 +127,39 @@ class CallManager:
     def list(self) -> list[CallSession]:
         return sorted(self._sessions.values(), key=lambda s: s.started_at, reverse=True)
 
+    def live(self) -> list[CallSession]:
+        """The calls running *right now* (server-started or mic/LiveKit), newest first."""
+        return [s for s in self.list() if s.ended_at is None]
+
+    # --- externally-driven sessions (the mic/LiveKit bridge) ---------------
+    def register_external(self, *, call_id: str, domain: str, campaign: str) -> CallSession:
+        """Track a live call driven from another process (its events arrive via Redis).
+
+        Idempotent: the first event for a call registers it so it appears in the live
+        list and the WebSocket accepts subscribers; later events just update it.
+        """
+        session = self._sessions.get(call_id)
+        if session is None:
+            session = CallSession(call_id=call_id, domain=domain, campaign=campaign)
+            self._sessions[call_id] = session
+        return session
+
+    def note_external_event(
+        self, call_id: str, event_type: str, data: dict, *, terminal: bool
+    ) -> None:
+        """Fold one bridged event into the tracked session (status, consent, end-of-call)."""
+        session = self._sessions.get(call_id)
+        if session is None:
+            return
+        if event_type == "status":
+            status = data.get("status")
+            if isinstance(status, str):
+                session.status = status
+        elif event_type == "consent":
+            session.consent_granted = bool(data.get("granted"))
+        if terminal:
+            session.ended_at = _now()
+
     def preflight(self) -> None:
         """Verify a call can run here (voice models installed); raises VoiceUnavailable."""
         self._engine.preflight()

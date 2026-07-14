@@ -3,6 +3,7 @@ import { api } from './api'
 import type {
   CallDetailOut,
   CallListOut,
+  CallOut,
   CampaignOut,
   ConsentLogOut,
   DocumentDeleteOut,
@@ -29,6 +30,7 @@ export const queryKeys = {
   domain: (domain: string) => ['domains', domain] as const,
   campaigns: ['campaigns'] as const,
   calls: (params: CallsParams) => ['calls', 'list', params] as const,
+  liveCalls: (domain: string) => ['calls', 'live', domain] as const,
   call: (id: string) => ['calls', 'detail', id] as const,
   consent: (id: string) => ['calls', 'detail', id, 'consent'] as const,
   documents: (domain: string) => ['domains', domain, 'documents'] as const,
@@ -75,6 +77,20 @@ export function useCalls(params: CallsParams) {
   return useQuery({
     queryKey: queryKeys.calls(params),
     queryFn: () => api.get<CallListOut>(`/calls?${callsQueryString(params)}`),
+  })
+}
+
+/**
+ * Calls running right now (mic/LiveKit or server-started), polled so the live
+ * banner appears within seconds of a call starting. Returns `[]` when idle.
+ */
+export function useLiveCalls(domain: string) {
+  return useQuery({
+    queryKey: queryKeys.liveCalls(domain),
+    queryFn: () => api.get<CallOut[]>(`/calls/live?domain=${encodeURIComponent(domain)}`),
+    enabled: domain.length > 0,
+    refetchInterval: 4000,
+    retry: false,
   })
 }
 

@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from config.settings import (
     Settings,
+    StateBackendName,
     STTProviderName,
     TTSProviderName,
     build_embedder,
@@ -53,6 +54,7 @@ from src.api.ingest_service import (
     default_reindexer,
     default_searcher,
 )
+from src.api.live_bridge import LiveCallBridge
 from src.api.runner import (
     AudioInput,
     CallEngine,
@@ -269,8 +271,11 @@ class AppResources:
     call_manager: CallManager
     ingest_service: IngestService
     pool: ProviderPool | None = None
+    live_bridge: LiveCallBridge | None = None
 
     async def aclose(self) -> None:
+        if self.live_bridge is not None:
+            await self.live_bridge.aclose()
         await self.call_manager.aclose()
         if self.pool is not None:
             await self.pool.aclose()
@@ -332,6 +337,34 @@ def build_resources(settings: Settings | None = None) -> AppResources:
         call_manager=call_manager,
         ingest_service=ingest_service,
         pool=pool,
+        live_bridge=_build_live_bridge(settings, hub, call_manager),
+    )
+
+
+def _build_live_bridge(
+    settings: Settings, hub: CallEventHub, call_manager: CallManager
+) -> LiveCallBridge | None:
+    """Wire the mic/LiveKit → dashboard bridge (Redis pub/sub). None unless Redis is used.
+
+    Only Redis pub/sub can carry events across the process boundary to a call taken at
+    the microphone; without it (in-memory state backend) a mic call simply isn't bridged.
+    The client is created lazily-connecting (``from_url``) — the subscribe happens in the
+    background task started at app startup.
+    """
+    if settings.state_backend is not StateBackendName.redis:
+        return None
+    from redis import asyncio as redis_asyncio
+
+    from src.telephony.events import event_channel
+
+    client = redis_asyncio.from_url(settings.redis_url)
+    return LiveCallBridge(
+        hub=hub,
+        call_manager=call_manager,
+        redis_client=client,
+        channel=event_channel(settings),
+        default_domain=settings.domain,
+        default_campaign=settings.default_campaign,
     )
 
 

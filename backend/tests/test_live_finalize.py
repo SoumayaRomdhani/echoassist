@@ -73,7 +73,7 @@ class _FakePipeline:
 
 
 def _spy_finalize(record: list[bool]):
-    async def _spy(settings, llm, state, *, completed: bool) -> None:
+    async def _spy(settings, llm, state, *, completed: bool, **_kw) -> None:
         record.append(completed)
 
     return _spy

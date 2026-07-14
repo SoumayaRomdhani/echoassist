@@ -52,6 +52,12 @@ export const handlers = [
     return HttpResponse.json({ items, total, limit, offset })
   }),
 
+  // The mock live stream is client-side (mockCallStream), so there is no server-side
+  // live registry to surface — the demo opens the call detail directly on start. Return
+  // an empty list so the live banner poll is a clean no-op offline. (Declared before
+  // `/calls/:id` so it isn't captured as id="live".)
+  http.get('*/calls/live', () => HttpResponse.json([])),
+
   http.get('*/calls/:id/consent', ({ params }) => {
     const call = getCall(String(params.id))
     return HttpResponse.json(call?.consent_log ?? [])

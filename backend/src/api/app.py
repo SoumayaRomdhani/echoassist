@@ -40,6 +40,10 @@ async def lifespan(app: FastAPI):
     resources: AppResources = app.state.resources
     configure_tracing(resources.settings)
     await init_db(resources.engine)
+    # Subscribe to mic/LiveKit call events (Redis) so a call taken in a terminal shows
+    # live on the dashboard. No-op when there is no bridge (in-memory state backend).
+    if resources.live_bridge is not None:
+        resources.live_bridge.start()
     log.info("EchoAssist API ready (domain=%s)", resources.settings.domain)
     try:
         yield

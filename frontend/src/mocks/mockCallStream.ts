@@ -100,24 +100,53 @@ function transcriptEvent(turn: Turn): ScriptEvent {
   }
 }
 
+function stateEvent(state: string, extra: Record<string, unknown> = {}): ScriptEvent {
+  return { type: 'agent_state', data: { state, ...extra } }
+}
+
+/**
+ * Expand a scenario into the wire event sequence, interleaving `agent_state`
+ * events so the live orb animates through listening → thinking → speaking exactly
+ * as the real pipeline will drive it. Assistant turns are `speaking`; caller turns
+ * are preceded by `listening`; a `thinking` beat sits between a caller answer and
+ * the next agent line. Structured-interview turns also carry question progress.
+ */
 function toEvents(scenario: Scenario): ScriptEvent[] {
   const events: ScriptEvent[] = [{ type: 'status', data: { status: 'started' } }]
-  // turns[0..2] = disclosure, consent answer, acknowledgement.
-  events.push(transcriptEvent(scenario.turns[0]))
-  events.push(transcriptEvent(scenario.turns[1]))
-  events.push(transcriptEvent(scenario.turns[2]))
+
+  // turns[0..2] = disclosure (agent), consent answer (caller), acknowledgement (agent).
+  events.push(stateEvent('speaking'), transcriptEvent(scenario.turns[0]))
+  events.push(stateEvent('listening'), transcriptEvent(scenario.turns[1]))
+  events.push(stateEvent('thinking'), stateEvent('speaking'), transcriptEvent(scenario.turns[2]))
   events.push({
     type: 'consent',
     data: { decision: scenario.consentDecision, granted: scenario.consentGranted },
   })
 
   if (!scenario.consentGranted) {
+    events.push(stateEvent('idle'))
     events.push({ type: 'status', data: { status: 'declined' }, terminal: true })
     return events
   }
 
   events.push({ type: 'status', data: { status: 'interviewing' } })
-  for (const turn of scenario.turns.slice(3)) events.push(transcriptEvent(turn))
+
+  const interview = scenario.turns.slice(3)
+  const questionTotal = interview.filter((t) => t.role === 'assistant').length
+  let questionIndex = 0
+  for (const turn of interview) {
+    if (turn.role === 'assistant') {
+      questionIndex += 1
+      events.push(
+        stateEvent('speaking', { question_index: questionIndex, question_total: questionTotal }),
+        transcriptEvent(turn),
+      )
+    } else {
+      events.push(stateEvent('listening'), transcriptEvent(turn), stateEvent('thinking'))
+    }
+  }
+
+  events.push(stateEvent('idle'))
   events.push({ type: 'notes', data: { notes: scenario.notes } })
   events.push({ type: 'summary', data: { summary: scenario.summary } })
   events.push({ type: 'status', data: { status: 'completed' }, terminal: true })

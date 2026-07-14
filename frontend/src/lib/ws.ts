@@ -1,9 +1,15 @@
 import { getRuntime, wsBaseUrl } from './runtimeConfig'
-import type { CallEvent, CallStatus, TranscriptTurnOut } from './types'
+import type { AgentState, CallEvent, CallStatus, TranscriptTurnOut } from './types'
 
 /** Derive the WebSocket URL for a call from the configured base URL. */
 export function callWsUrl(callId: string): string {
   return `${wsBaseUrl()}/ws/calls/${callId}`
+}
+
+/** Live interview progress: which structured question we're on, out of how many. */
+export interface CallProgress {
+  index: number
+  total: number
 }
 
 /** Folded view of a call's live event stream. */
@@ -17,6 +23,12 @@ export interface LiveCallState {
   summary: string | null
   degraded: { reason?: string } | null
   error: { message: string; persisted?: boolean } | null
+  /** The agent's current turn phase (drives the ambient orb + status text). */
+  agentState: AgentState
+  /** Latest speaking amplitude 0–1, for an audio-reactive orb. Absent ⇒ synthesized. */
+  volume: number | null
+  /** Structured-interview progress, when known. */
+  progress: CallProgress | null
 }
 
 export const initialLiveState: LiveCallState = {
@@ -29,17 +41,49 @@ export const initialLiveState: LiveCallState = {
   summary: null,
   degraded: null,
   error: null,
+  agentState: 'idle',
+  volume: null,
+  progress: null,
+}
+
+const AGENT_STATES: readonly AgentState[] = ['idle', 'listening', 'thinking', 'speaking']
+
+function asAgentState(value: unknown): AgentState | null {
+  return AGENT_STATES.includes(value as AgentState) ? (value as AgentState) : null
+}
+
+function asProgress(data: Record<string, unknown>): CallProgress | null {
+  const index = data.question_index
+  const total = data.question_total
+  if (typeof index === 'number' && typeof total === 'number' && total > 0) {
+    return { index, total }
+  }
+  return null
 }
 
 /** Pure reducer: apply one `CallEvent` to the folded state. */
 export function foldEvent(state: LiveCallState, event: CallEvent): LiveCallState {
   switch (event.type) {
-    case 'status':
+    case 'status': {
+      const done = state.done || event.terminal
       return {
         ...state,
         status: (event.data.status as CallStatus | undefined) ?? state.status,
-        done: state.done || event.terminal,
+        done,
+        // A finished call has no active agent phase — settle the orb.
+        agentState: done ? 'idle' : state.agentState,
       }
+    }
+    case 'agent_state': {
+      const next = asAgentState(event.data.state)
+      const volume = typeof event.data.volume === 'number' ? event.data.volume : null
+      return {
+        ...state,
+        agentState: next ?? state.agentState,
+        volume,
+        progress: asProgress(event.data) ?? state.progress,
+      }
+    }
     case 'transcript': {
       const citations = Array.isArray(event.data.citations)
         ? (event.data.citations as string[])
@@ -74,6 +118,7 @@ export function foldEvent(state: LiveCallState, event: CallEvent): LiveCallState
           persisted: Boolean(event.data.persisted),
         },
         done: true,
+        agentState: 'idle',
       }
     default:
       return state

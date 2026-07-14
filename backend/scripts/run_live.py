@@ -40,12 +40,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+from uuid import uuid4
 
 from config.settings import get_settings
-from src.console import FAIL, dim, init_console
+from src.console import FAIL, bold, dim, init_console
 from src.log import setup_logging
 from src.providers.errors import ProviderError
 from src.runtime import use_selector_event_loop
+from src.telephony.events import NULL_SINK, RedisCallEventSink, build_redis_event_sink
 from src.telephony.live_session import run_live_session
 from src.telephony.local_audio import LocalAudioTransport
 
@@ -73,6 +75,12 @@ def _parse_args() -> argparse.Namespace:
         help="Pin the STT language, e.g. 'en' or 'fr' (default: WHISPER_LANGUAGE / auto-detect). "
              "Pinning avoids whisper mis-detecting the language on short utterances.",
     )
+    parser.add_argument(
+        "--broadcast", action="store_true",
+        help="Stream this call to the dashboard live (via Redis). Needs Redis + the API "
+             "server up; the call appears under Calls and in the live banner. Terminal "
+             "output is unchanged.",
+    )
     return parser.parse_args()
 
 
@@ -97,10 +105,24 @@ async def main() -> None:
             "Check your input device, or pass --rate 48000 / --device <name>."
         ) from exc
 
+    # --broadcast streams the call to the dashboard; otherwise the sink is a no-op and
+    # this is exactly the terminal-only run it always was.
+    call_id: str | None = None
+    sink = NULL_SINK
+    if args.broadcast:
+        call_id = uuid4().hex
+        sink = build_redis_event_sink(settings, call_id)
+        print(bold("\nBroadcasting to the dashboard.") + dim(f"  call id={call_id}"))
+        print(dim("Open EchoAssist → Calls: it appears live at the top (and in the banner)."))
+
     try:
-        await run_live_session(transport, settings, interview=args.interview)
+        await run_live_session(
+            transport, settings, interview=args.interview, sink=sink, call_id=call_id
+        )
     finally:
         await transport.aclose()
+        if isinstance(sink, RedisCallEventSink):
+            await sink.aclose()
 
 
 if __name__ == "__main__":

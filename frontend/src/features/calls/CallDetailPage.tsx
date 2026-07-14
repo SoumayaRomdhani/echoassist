@@ -10,6 +10,7 @@ import { formatDateTime, shortId } from '@/lib/format'
 import { useCall } from '@/lib/query'
 import type { CallStatus } from '@/lib/types'
 import { ConsentPanel } from './ConsentPanel'
+import { LiveCallStage } from './LiveCallStage'
 import { NotesPanel } from './NotesPanel'
 import { SummaryPanel } from './SummaryPanel'
 import { TranscriptView } from './TranscriptView'
@@ -104,7 +105,16 @@ export function CallDetailPage({ callId, onBack }: { callId: string; onBack: () 
         </div>
       ) : (
         <div className="mt-6 grid items-start gap-6 lg:grid-cols-[1.4fr_1fr]">
-          <TranscriptView turns={turns} live={showLive} />
+          <div className="space-y-6">
+            {showLive ? (
+              <LiveCallStage
+                agentState={live.agentState}
+                volume={live.volume}
+                progress={live.progress}
+              />
+            ) : null}
+            <TranscriptView turns={turns} live={showLive} />
+          </div>
           <div className="space-y-6">
             <NotesPanel notes={notes} />
             <SummaryPanel summary={summary} />

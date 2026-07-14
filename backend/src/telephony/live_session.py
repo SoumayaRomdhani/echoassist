@@ -46,6 +46,7 @@ from src.providers.tts.base import TTSProvider
 from src.providers.types import AudioChunk
 from src.storage.db import init_db, make_sessionmaker
 from src.storage.queries import log_consent
+from src.telephony.events import NULL_SINK, CallEventSink
 from src.telephony.transport import Transport
 
 if TYPE_CHECKING:
@@ -147,6 +148,31 @@ async def _say(transport: Transport, label: str, text: str, audio: AudioChunk) -
     return barged
 
 
+def _emit_transcript(
+    sink: CallEventSink, role: str, text: str, *, citations: list[str] | None = None
+) -> None:
+    """Broadcast one transcript turn (empty turns are skipped, matching the API runner)."""
+    if not text:
+        return
+    data: dict = {"role": role, "text": text}
+    if citations:
+        data["citations"] = citations
+    sink.emit("transcript", data)
+
+
+def _progress(index: int, total: int) -> dict:
+    """Question-progress fields for an ``agent_state`` event (omitted when total unknown)."""
+    if total > 0:
+        return {"question_index": index, "question_total": total}
+    return {"question_index": index}
+
+
+def _question_total(domain: DomainConfig | None) -> int:
+    """How many questions the interview flow asks — the denominator for the progress bar."""
+    states = domain.flow.get("states", []) if domain is not None else []
+    return sum(1 for s in states if isinstance(s, dict) and s.get("type") == "question")
+
+
 async def _record_consent(
     settings: Settings, *, call_id: str, disclosure_text: str, consent: ConsentTurn
 ) -> None:
@@ -177,36 +203,55 @@ async def _record_consent(
 
 
 async def _greet_and_consent(
-    pipeline: VoicePipeline, transport: Transport, settings: Settings, call_id: str
+    pipeline: VoicePipeline,
+    transport: Transport,
+    settings: Settings,
+    call_id: str,
+    sink: CallEventSink = NULL_SINK,
 ) -> bool:
     """Disclosure → spoken consent → audit log. Returns True if the call may proceed."""
     disclosure_text, audio = await pipeline.speak_disclosure()
+    sink.emit("agent_state", {"state": "speaking"})
     await _say(transport, "AGENT (disclosure):", disclosure_text, audio)
+    _emit_transcript(sink, "assistant", disclosure_text)
 
     print(dim("\n[listening — the caller answers the consent question, then pauses]"))
+    sink.emit("agent_state", {"state": "listening"})
     consent = await pipeline.handle_consent(transport.listen())
     print(
         f"\n{bold('CALLER:')} {consent.transcript or '(silence)'}  "
         f"{dim('[' + consent.decision.value + ']')}"
     )
+    _emit_transcript(sink, "caller", consent.transcript)
+    sink.emit("agent_state", {"state": "thinking"})
+    sink.emit("agent_state", {"state": "speaking"})
     await _say(transport, "AGENT:", consent.reply, consent.audio)
+    _emit_transcript(sink, "assistant", consent.reply)
     await _record_consent(
         settings, call_id=call_id, disclosure_text=disclosure_text, consent=consent
     )
+    sink.emit("consent", {"decision": consent.decision.value, "granted": consent.proceed})
     if consent.ended or not consent.proceed:
         print(dim("\nCall ended."))
         return False
     return True
 
 
-async def _run_conversation(pipeline: VoicePipeline, transport: Transport) -> None:
+async def _run_conversation(
+    pipeline: VoicePipeline, transport: Transport, *, sink: CallEventSink = NULL_SINK
+) -> None:
     """Free conversational loop (no structured flow, no services needed)."""
     print(dim("\n--- consent granted — start talking (Ctrl-C to hang up) ---"))
     while True:
         print(dim("\n[listening…]"))
+        sink.emit("agent_state", {"state": "listening"})
         result = await pipeline.run_turn(transport.listen())
         print(f"\n{bold('CALLER:')} {result.transcript or '(silence)'}")
+        _emit_transcript(sink, "caller", result.transcript)
+        sink.emit("agent_state", {"state": "thinking"})
+        sink.emit("agent_state", {"state": "speaking"})
         await _say(transport, "AGENT:", result.reply, result.audio)
+        _emit_transcript(sink, "assistant", result.reply)
         t = result.timings
         print(dim(
             f"latency  stt={t.stt_ms:.0f}ms  llm={t.llm_ms:.0f}ms  "
@@ -222,17 +267,26 @@ async def _run_interview(
     llm: LLMProvider,
     state: ConversationState,
     filler: _Filler | None = None,
+    sink: CallEventSink = NULL_SINK,
+    call_id: str = "",
+    domain: DomainConfig | None = None,
 ) -> None:
     """The full structured screening interview, live, then notes + summary persisted."""
     print(dim("\n--- consent granted — the interview begins (Ctrl-C to hang up) ---"))
+    total = _question_total(domain)
+    sink.emit("status", {"status": "interviewing"})
+    question_index = 1
     question_text, question_audio = await pipeline.begin_interview()
+    sink.emit("agent_state", {"state": "speaking", **_progress(question_index, total)})
     await _say(transport, "AGENT:", question_text, question_audio)
+    _emit_transcript(sink, "assistant", question_text)
 
     turn_id = 0
     try:
         while True:
             turn_id += 1
             print(dim("\n[listening…]"))
+            sink.emit("agent_state", {"state": "listening", **_progress(question_index, total)})
             # record_turn is a no-op unless LATENCY_LOGGING=true (adds nothing otherwise).
             with latency.record_turn(
                 settings.data_dir, turn_id=turn_id, **latency.config_fields(settings)
@@ -245,18 +299,25 @@ async def _run_interview(
                     transport.listen()
                 )
                 print(f"\n{bold('CALLER:')} {transcript or '(silence)'}")
+                _emit_transcript(sink, "caller", transcript)
+                sink.emit("agent_state", {"state": "thinking", **_progress(question_index, total)})
                 # Cover a slow *grounded* turn with a filler; slot answers / meta go straight thru.
                 use_filler = (
                     filler is not None and filler.ready
                     and (is_rag or not settings.filler_only_for_rag)
                 )
+                sink.emit("agent_state", {"state": "speaking", **_progress(question_index, total)})
                 if use_filler:
                     barged = await _play_with_filler(
                         transport, audio_stream, filler.next_chunk, filler.delay_s
                     )
                 else:
                     barged = await transport.send_stream_interruptible(audio_stream)
-                print(f"{bold('AGENT:')} {_last_agent_line(state)}")
+                agent_line = _last_agent_line(state)
+                print(f"{bold('AGENT:')} {agent_line}")
+                _emit_transcript(sink, "assistant", agent_line)
+                # The agent's reply typically poses the next question — advance the counter.
+                question_index = min(question_index + 1, total) if total else question_index + 1
                 if barged:
                     print(dim("  [barge-in — the caller talked over the agent]"))
             if pipeline.interview_finished:
@@ -267,7 +328,10 @@ async def _run_interview(
         # than a recognised closing phrase, and a slot flow can be abandoned mid-way; in
         # both cases the loop exits without `interview_finished`. Finalizing here (instead
         # of only after a clean break) is what makes those calls reach the dashboard.
-        await _finalize(settings, llm, state, completed=pipeline.interview_finished)
+        sink.emit("agent_state", {"state": "idle"})
+        await _finalize(
+            settings, llm, state, completed=pipeline.interview_finished, sink=sink, call_id=call_id
+        )
 
 
 def _last_agent_line(state: ConversationState) -> str:
@@ -279,7 +343,13 @@ def _last_agent_line(state: ConversationState) -> str:
 
 
 async def _finalize(
-    settings: Settings, llm: LLMProvider, state: ConversationState, *, completed: bool
+    settings: Settings,
+    llm: LLMProvider,
+    state: ConversationState,
+    *,
+    completed: bool,
+    sink: CallEventSink = NULL_SINK,
+    call_id: str = "",
 ) -> None:
     """Extract structured notes + a grounded summary and persist them to Postgres.
 
@@ -287,10 +357,14 @@ async def _finalize(
     or a recognised closing phrase) or ended early (hang-up / abandoned); it becomes the
     persisted call ``status``. A call where the caller never spoke has nothing worth
     persisting, so it's skipped.
+
+    A terminal ``status`` event is always broadcast so the dashboard settles the call,
+    even when there is nothing to persist or Postgres is down (the live transcript stays).
     """
     print(bold("\n--- Interview complete ---" if completed else "\n--- Call ended ---"))
     if not any(turn["role"] == "user" for turn in state.transcript):
         print(dim("Nothing to persist — no caller turns recorded."))
+        sink.emit("status", {"status": "completed"}, terminal=True)
         return
     print(f"{bold('Filled slots:')}")
     for slot, value in state.slots.items():
@@ -312,10 +386,14 @@ async def _finalize(
             print(f"  {key}: {value}")
         print(f"\n{bold('Summary:')} {final.summary}")
         print(dim(f"persisted to Postgres: call id={final.call.id} ({final.call.status})"))
+        sink.emit("notes", {"notes": final.notes})
+        sink.emit("summary", {"summary": final.summary})
     except Exception as exc:  # noqa: BLE001 — finalize needs Postgres; warn rather than crash the demo
         print(f"{WARN} notes/summary NOT persisted ({exc}). Needs Postgres up.")
     finally:
         await engine.dispose()
+        # Settle the dashboard whatever happened above — the call has ended.
+        sink.emit("status", {"status": "completed"}, terminal=True)
 
 
 async def _warm_retriever(retriever: Retriever) -> None:
@@ -377,12 +455,23 @@ def _build_dialogue(
 
 
 async def run_live_session(
-    transport: Transport, settings: Settings, *, interview: bool
+    transport: Transport,
+    settings: Settings,
+    *,
+    interview: bool,
+    sink: CallEventSink = NULL_SINK,
+    call_id: str | None = None,
 ) -> None:
     """Run one live call on an already-started ``transport``.
 
     The caller owns the transport (``start()`` / ``aclose()``); this owns the
     pipeline + conversation state it builds and tears them down on the way out.
+
+    ``sink`` receives the call's live events (status / transcript / consent /
+    agent_state / notes / summary) for the dashboard; it defaults to :data:`NULL_SINK`
+    so a plain terminal run broadcasts nothing and its console output is unchanged.
+    The caller may pass ``call_id`` so it can address the same call on the sink's
+    transport (Redis channel) — otherwise a fresh id is generated here.
     """
     log.info(
         "Providers: STT=%s LLM=%s TTS=%s | domain=%s | mode=%s",
@@ -394,7 +483,7 @@ async def run_live_session(
     )
 
     domain = load_domain_config(settings.domain, settings.config_dir)
-    call_id = uuid.uuid4().hex
+    call_id = call_id or uuid.uuid4().hex
     llm = build_llm_with_failover(settings)
     tts = build_tts(settings)   # shared by the pipeline and the filler
 
@@ -425,15 +514,23 @@ async def run_live_session(
         pipeline = VoicePipeline(build_stt(settings), llm, tts, domain)
 
     try:
-        if not await _greet_and_consent(pipeline, transport, settings, call_id):
+        # The domain rides along on the first event so the API-side bridge can register
+        # this call under the right domain (that's what makes it show in the dashboard list).
+        sink.emit("status", {"status": "started", "domain": settings.domain})
+        if not await _greet_and_consent(pipeline, transport, settings, call_id, sink):
+            sink.emit("status", {"status": "declined"}, terminal=True)
             return
         if interview:
             assert state is not None
             await _run_interview(
-                pipeline, transport, settings=settings, llm=llm, state=state, filler=filler
+                pipeline, transport, settings=settings, llm=llm, state=state,
+                filler=filler, sink=sink, call_id=call_id, domain=domain,
             )
         else:
-            await _run_conversation(pipeline, transport)
+            try:
+                await _run_conversation(pipeline, transport, sink=sink)
+            finally:
+                sink.emit("status", {"status": "completed"}, terminal=True)
     finally:
         for task in (rag_warm_task, filler_task):
             if task is not None and not task.done():

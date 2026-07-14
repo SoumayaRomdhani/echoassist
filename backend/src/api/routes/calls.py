@@ -22,6 +22,20 @@ from src.storage import queries
 router = APIRouter(prefix="/calls", tags=["calls"])
 
 
+def _live_call_out(session) -> CallOut:
+    """A list-row for a call running right now (not yet a persisted record)."""
+    return CallOut(
+        call_id=session.call_id,
+        campaign_id=0,  # placeholder — a live call has no campaign row until it persists
+        domain=session.domain,
+        status=session.status,
+        consent_granted=session.consent_granted,
+        created_at=session.started_at,
+        has_notes=False,
+        has_summary=False,
+    )
+
+
 @router.post("", response_model=StartCallResponse, status_code=202)
 async def start_call(
     body: StartCallRequest, resources: AppResources = Depends(get_resources)
@@ -52,9 +66,34 @@ async def list_calls(
             db, campaign_id=campaign_id, domain=domain, limit=limit, offset=offset
         )
         total = await queries.count_calls(db, campaign_id=campaign_id, domain=domain)
-    return CallListOut(
-        items=[CallOut.from_orm_model(c) for c in calls], total=total, limit=limit, offset=offset
-    )
+
+    # Surface calls running right now (mic/LiveKit + server-started) at the top of the
+    # first page, so a live call is discoverable before it is persisted. Deduped against
+    # the persisted rows; campaign filtering excludes them (a live call has no campaign row).
+    live_items: list[CallOut] = []
+    if offset == 0 and campaign_id is None:
+        persisted_ids = {c.call_id for c in calls}
+        live = [
+            s
+            for s in resources.call_manager.live()
+            if s.call_id not in persisted_ids and (domain is None or s.domain == domain)
+        ]
+        live_items = [_live_call_out(s) for s in live]
+
+    items = live_items + [CallOut.from_orm_model(c) for c in calls]
+    return CallListOut(items=items, total=total + len(live_items), limit=limit, offset=offset)
+
+
+@router.get("/live", response_model=list[CallOut])
+async def list_live_calls(
+    domain: str | None = Query(default=None),
+    resources: AppResources = Depends(get_resources),
+) -> list[CallOut]:
+    """Calls in progress right now — powers the dashboard's live banner. Newest first."""
+    live = resources.call_manager.live()
+    if domain is not None:
+        live = [s for s in live if s.domain == domain]
+    return [_live_call_out(s) for s in live]
 
 
 @router.get("/{call_id}/status", response_model=CallStatusOut)

@@ -6,6 +6,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useAgentDomain } from '@/embed/AgentConfigContext'
 import { CallList } from '@/features/calls/CallList'
+import { LiveCallsBanner } from '@/features/calls/LiveCallsBanner'
 import { StartCallDialog } from '@/features/calls/StartCallDialog'
 import { DomainConfigPage } from '@/features/config/DomainConfigPage'
 import { MetricsPage } from '@/features/metrics/MetricsPage'
@@ -76,6 +77,8 @@ function CallsTab({
         </div>
         <StartCallDialog domain={domain} onStarted={onOpenCall} />
       </div>
+
+      <LiveCallsBanner domain={domain} onOpenCall={onOpenCall} />
 
       {isLoading ? (
         <Skeleton className="h-64 rounded-2xl" />
