@@ -195,10 +195,15 @@ def _agent_text_emitter(sink: CallEventSink, *, min_interval_s: float = 0.08):
     acc = ""
     last_text = ""
     last_emit = 0.0
+    started = False
 
     def on_text(delta: str) -> None:
-        nonlocal acc, last_text, last_emit
+        nonlocal acc, last_text, last_emit, started
         acc += delta
+        if not started:
+            # First token => the LLM is now writing the answer (retrieval is done).
+            started = True
+            sink.emit("agent_step", {"label": "Composing the reply…"})
         now = time.monotonic()
         if now - last_emit < min_interval_s:
             return
@@ -354,6 +359,10 @@ async def _run_interview(
                 print(f"\n{bold('CALLER:')} {transcript or '(silence)'}")
                 _emit_transcript(sink, "caller", transcript)
                 sink.emit("agent_state", {"state": "thinking", **_progress(question_index, total)})
+                # Labor illusion: a grounded turn will hit the knowledge base — say so, so the
+                # wait reads as real work. "Composing the reply…" follows at the first token.
+                if is_rag:
+                    sink.emit("agent_step", {"label": "Searching the knowledge base…"})
                 # Cover a slow *grounded* turn with a filler; slot answers / meta go straight thru.
                 use_filler = (
                     filler is not None and filler.ready

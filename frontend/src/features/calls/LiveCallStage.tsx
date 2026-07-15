@@ -21,10 +21,13 @@ export function LiveCallStage({
   agentState,
   volume,
   progress,
+  step,
 }: {
   agentState: AgentState
   volume: number | null
   progress: CallProgress | null
+  /** Concrete pipeline sub-step ("Searching the knowledge base…"); overrides the phase label. */
+  step?: string | null
 }) {
   const phase = PHASE[agentState]
 
@@ -37,7 +40,7 @@ export function LiveCallStage({
           aria-live="polite"
           className={cn('font-display text-lg font-semibold tracking-tight', phase.className)}
         >
-          {phase.label}
+          {step ?? phase.label}
         </p>
         {progress ? (
           <p className="text-xs font-medium uppercase tracking-wide text-muted">

@@ -34,6 +34,8 @@ export interface LiveCallState {
    * agent's reply as the LLM writes it — shown as a typing bubble until the final turn lands.
    */
   partial: { role: string; text: string } | null
+  /** The current pipeline sub-step ("Searching the knowledge base…"), for the labor-illusion UI. */
+  agentStep: string | null
 }
 
 export const initialLiveState: LiveCallState = {
@@ -50,6 +52,7 @@ export const initialLiveState: LiveCallState = {
   volume: null,
   progress: null,
   partial: null,
+  agentStep: null,
 }
 
 const AGENT_STATES: readonly AgentState[] = ['idle', 'listening', 'thinking', 'speaking']
@@ -76,21 +79,27 @@ export function foldEvent(state: LiveCallState, event: CallEvent): LiveCallState
         ...state,
         status: (event.data.status as CallStatus | undefined) ?? state.status,
         done,
-        // A finished call has no active agent phase — settle the orb, drop any partial.
+        // A finished call has no active agent phase — settle the orb, drop any partial/step.
         agentState: done ? 'idle' : state.agentState,
         partial: done ? null : state.partial,
+        agentStep: done ? null : state.agentStep,
       }
     }
     case 'agent_state': {
       const next = asAgentState(event.data.state)
       const volume = typeof event.data.volume === 'number' ? event.data.volume : null
+      // A new turn (back to listening) or an idle gap clears the previous sub-step.
+      const resetsStep = next === 'listening' || next === 'idle'
       return {
         ...state,
         agentState: next ?? state.agentState,
         volume,
         progress: asProgress(event.data) ?? state.progress,
+        agentStep: resetsStep ? null : state.agentStep,
       }
     }
+    case 'agent_step':
+      return { ...state, agentStep: String(event.data.label ?? '') || null }
     case 'transcript': {
       const citations = Array.isArray(event.data.citations)
         ? (event.data.citations as string[])

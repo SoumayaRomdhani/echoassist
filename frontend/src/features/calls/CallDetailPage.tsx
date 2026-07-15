@@ -111,6 +111,7 @@ export function CallDetailPage({ callId, onBack }: { callId: string; onBack: () 
                 agentState={live.agentState}
                 volume={live.volume}
                 progress={live.progress}
+                step={live.agentStep}
               />
             ) : null}
             <TranscriptView turns={turns} live={showLive} partial={showLive ? live.partial : null} />

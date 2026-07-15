@@ -89,6 +89,20 @@ describe('foldEvent', () => {
     expect(state.partial).toBeNull()
   })
 
+  it('tracks the labor-illusion sub-step and clears it on the next turn', () => {
+    let state = initialLiveState
+    state = foldEvent(state, event({ type: 'agent_state', data: { state: 'thinking' } }))
+    state = foldEvent(state, event({ type: 'agent_step', data: { label: 'Searching the knowledge base…' } }))
+    expect(state.agentStep).toBe('Searching the knowledge base…')
+
+    state = foldEvent(state, event({ type: 'agent_step', data: { label: 'Composing the reply…' } }))
+    expect(state.agentStep).toBe('Composing the reply…')
+
+    // Back to listening (next turn) clears the step.
+    state = foldEvent(state, event({ type: 'agent_state', data: { state: 'listening' } }))
+    expect(state.agentStep).toBeNull()
+  })
+
   it('settles the agent orb to idle when the call ends', () => {
     let state = foldEvent(initialLiveState, event({ type: 'agent_state', data: { state: 'speaking' } }))
     expect(state.agentState).toBe('speaking')

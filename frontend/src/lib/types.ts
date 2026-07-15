@@ -162,6 +162,7 @@ export type CallEventType =
   | 'degraded'
   | 'error'
   | 'agent_state'
+  | 'agent_step'
 
 /**
  * The agent's live turn phase, surfaced by the `agent_state` event so the UI can

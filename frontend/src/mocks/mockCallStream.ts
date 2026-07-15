@@ -121,7 +121,13 @@ function callerTurnEvents(turn: Turn): ScriptEvent[] {
 }
 
 function agentTurnEvents(turn: Turn): ScriptEvent[] {
-  return [...partialEvents(turn.text, 'assistant'), transcriptEvent(turn)]
+  // Labor illusion: a grounded (cited) reply "searches" first; every reply "composes".
+  const steps: ScriptEvent[] = []
+  if (turn.citations?.length) {
+    steps.push({ type: 'agent_step', data: { label: 'Searching the knowledge base…' } })
+  }
+  steps.push({ type: 'agent_step', data: { label: 'Composing the reply…' } })
+  return [...steps, ...partialEvents(turn.text, 'assistant'), transcriptEvent(turn)]
 }
 
 /**
