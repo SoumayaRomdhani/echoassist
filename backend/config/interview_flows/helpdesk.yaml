@@ -14,14 +14,14 @@ language: en
 
 # Spoken at the very start of every call (ARCHITECTURE.md §10 — AI disclosure + consent).
 disclosure: >
-  Hi, you've reached EchoAssist, ACTEEK's automated I T support assistant. I'm an
-  artificial intelligence, not a human, and this call may be recorded for quality and
-  record keeping. Is it okay to continue?
+  Hi there, you've reached I T support. Quick heads‑up before we dive in — I'm an
+  automated assistant, and the call's recorded for quality and record‑keeping. All
+  good to carry on?
 
 # Spoken ONLY after the caller explicitly consents (see consent gate in orchestrator).
 greeting: >
-  Thanks. I can help with things like V P N, passwords, M F A, email, Wi‑Fi, a slow
-  laptop, or access requests. You can hang up or ask me to escalate at any time.
+  Perfect. I handle most common I T issues — V P N, Wi‑Fi, access requests. You can
+  ask me to escalate or hang up any time.
 
 # Spoken when the caller's answer to the consent question is unclear (re-ask once).
 consent_reprompt: >
