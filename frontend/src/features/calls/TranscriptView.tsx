@@ -14,17 +14,20 @@ export function TranscriptView({
   turns,
   live,
   partial,
+  pending,
 }: {
   turns: TranscriptTurnOut[]
   live?: boolean
   /** A turn being produced live (caller interim STT or agent reply), shown as a typing bubble. */
   partial?: { role: string; text: string } | null
+  /** The agent is working but hasn't produced text yet — show a shimmering placeholder reply. */
+  pending?: boolean
 }) {
   const endRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [turns.length, partial?.text])
+  }, [turns.length, partial?.text, pending])
 
   return (
     <div className="flex h-full flex-col rounded-2xl border border-border bg-surface">
@@ -41,7 +44,7 @@ export function TranscriptView({
       </div>
 
       <div className="max-h-[62vh] flex-1 space-y-4 overflow-y-auto p-5 scrollbar-thin">
-        {turns.length === 0 && !partial ? (
+        {turns.length === 0 && !partial && !pending ? (
           <p className="py-10 text-center text-sm text-muted">
             {live ? 'Waiting for the first turn…' : 'No transcript available.'}
           </p>
@@ -115,6 +118,20 @@ export function TranscriptView({
               </div>
             )
           })()
+        ) : pending ? (
+          <div className="flex gap-3">
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-accent/15 text-accent">
+              <Bot className="size-4" />
+            </div>
+            <div
+              className="max-w-[80%] space-y-2 rounded-2xl bg-foreground/[0.04] px-4 py-3.5"
+              aria-label="EchoAssist is preparing a reply"
+            >
+              <div className="h-2.5 w-44 animate-pulse rounded bg-foreground/10" />
+              <div className="h-2.5 w-56 animate-pulse rounded bg-foreground/10 [animation-delay:150ms]" />
+              <div className="h-2.5 w-32 animate-pulse rounded bg-foreground/10 [animation-delay:300ms]" />
+            </div>
+          </div>
         ) : null}
         <div ref={endRef} />
       </div>

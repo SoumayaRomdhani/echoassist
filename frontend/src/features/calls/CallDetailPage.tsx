@@ -114,7 +114,16 @@ export function CallDetailPage({ callId, onBack }: { callId: string; onBack: () 
                 step={live.agentStep}
               />
             ) : null}
-            <TranscriptView turns={turns} live={showLive} partial={showLive ? live.partial : null} />
+            <TranscriptView
+              turns={turns}
+              live={showLive}
+              partial={showLive ? live.partial : null}
+              pending={
+                showLive &&
+                (live.agentState === 'thinking' || live.agentState === 'speaking') &&
+                live.partial?.role !== 'assistant'
+              }
+            />
           </div>
           <div className="space-y-6">
             <NotesPanel notes={notes} />
