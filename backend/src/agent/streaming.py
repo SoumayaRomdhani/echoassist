@@ -126,6 +126,7 @@ async def synthesize_streaming(
     clean: Callable[[str], str] = _identity,
     coalesce_sentences: bool = False,
     policy: ChunkPolicy | None = None,
+    on_text: Callable[[str], None] | None = None,
 ) -> AsyncIterator[AudioChunk]:
     """True LLM->TTS streaming: yield each TTS audio chunk **as soon as the provider
     returns it** (lowest time-to-first-audio).
@@ -178,6 +179,10 @@ async def synthesize_streaming(
     last_flush = time.perf_counter()
     async for delta in text_stream:
         buffer += delta
+        if on_text is not None and delta:
+            # Forward the raw reply delta for a live "typewriter" transcript (dashboard).
+            # Fires as the LLM generates, independent of the (sentence-buffered) TTS flush.
+            on_text(delta)
         if policy is None:
             texts, buffer = split_complete_sentences(buffer)   # fallback: whole sentences
         else:

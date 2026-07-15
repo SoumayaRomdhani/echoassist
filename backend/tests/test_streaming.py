@@ -65,6 +65,19 @@ async def test_streaming_synthesizes_each_sentence_in_order() -> None:
 
 
 @pytest.mark.asyncio
+async def test_on_text_forwards_each_reply_delta_for_a_live_typewriter() -> None:
+    async def stream() -> AsyncIterator[str]:
+        for delta in ["Thank ", "you. ", "How many years?"]:
+            yield delta
+
+    seen: list[str] = []
+    _ = [c async for c in synthesize_streaming(stream(), RecordingTTS(), on_text=seen.append)]
+
+    # Every reply delta is forwarded, in order — the dashboard types the answer out live.
+    assert seen == ["Thank ", "you. ", "How many years?"]
+
+
+@pytest.mark.asyncio
 async def test_first_audio_is_ready_before_input_is_fully_consumed() -> None:
     pulled: list[int] = []
 

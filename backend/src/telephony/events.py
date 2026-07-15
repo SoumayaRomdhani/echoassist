@@ -58,39 +58,52 @@ class RedisCallEventSink:
 
     The live call runs in the terminal process; the API server subscribes to the same
     channel (:class:`~src.api.live_bridge.LiveCallBridge`) and re-fans the events to its
-    hub, so the dashboard sees the call live. Publishing is fire-and-forget — ``emit``
-    schedules the network write on the running loop and returns immediately, and a failed
-    publish is logged, never raised, so the call is unaffected by a Redis blip.
+    hub, so the dashboard sees the call live.
+
+    ``emit`` is non-blocking: it enqueues the event and returns immediately, so it never
+    adds latency to the call. A single background worker drains the queue and publishes
+    **in order** — ordering matters (the ``started`` event carries the call's domain, and
+    transcript turns must arrive in sequence), so publishes are serialized rather than
+    fired concurrently. A failed publish is logged, never raised, so a Redis blip can't
+    break the call.
     """
 
     def __init__(self, redis_client, channel: str, call_id: str) -> None:
         self._redis = redis_client
         self._channel = channel
         self._call_id = call_id
-        self._tasks: set[asyncio.Task] = set()
+        self._queue: asyncio.Queue[str] = asyncio.Queue()
+        self._worker: asyncio.Task | None = None
 
     def emit(self, type_: str, data: dict, *, terminal: bool = False) -> None:
         payload = json.dumps(
             {"call_id": self._call_id, "type": type_, "data": data, "terminal": terminal}
         )
-        try:
-            task = asyncio.ensure_future(self._publish(payload))
-        except RuntimeError:  # no running loop — nothing to publish onto
-            return
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        if self._worker is None or self._worker.done():
+            try:
+                self._worker = asyncio.ensure_future(self._run())
+            except RuntimeError:  # no running loop — nothing to publish onto
+                return
+        self._queue.put_nowait(payload)
 
-    async def _publish(self, payload: str) -> None:
-        try:
-            await self._redis.publish(self._channel, payload)
-        except Exception as exc:  # noqa: BLE001 — a broken sink must never break the call
-            log.debug("call-event publish failed: %s", exc)
+    async def _run(self) -> None:
+        while True:
+            payload = await self._queue.get()
+            try:
+                await self._redis.publish(self._channel, payload)
+            except Exception as exc:  # noqa: BLE001 — a broken sink must never break the call
+                log.debug("call-event publish failed: %s", exc)
+            finally:
+                self._queue.task_done()
 
     async def aclose(self) -> None:
-        """Drain any in-flight publishes and close the client (called at end of call)."""
-        for task in list(self._tasks):
+        """Flush every queued event (incl. the terminal one), then close the client."""
+        if self._worker is not None and not self._worker.done():
             with contextlib.suppress(Exception):
-                await task
+                await self._queue.join()   # wait until all queued publishes have completed
+            self._worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._worker
         with contextlib.suppress(Exception):
             await self._redis.aclose()
 

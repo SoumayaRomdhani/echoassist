@@ -185,6 +185,11 @@ class CallManager:
             status = data.get("status")
             if isinstance(status, str):
                 session.status = status
+            # The 'started' event carries the call's real domain — adopt it, so the call
+            # lists under the right domain even if it first registered under the default.
+            domain = data.get("domain")
+            if isinstance(domain, str) and domain:
+                session.domain = domain
         elif event_type == "consent":
             session.consent_granted = bool(data.get("granted"))
         if terminal:

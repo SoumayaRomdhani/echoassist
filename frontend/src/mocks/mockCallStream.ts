@@ -104,20 +104,24 @@ function stateEvent(state: string, extra: Record<string, unknown> = {}): ScriptE
   return { type: 'agent_state', data: { state, ...extra } }
 }
 
-/** Interim STT: two growing hypotheses so the caller's line types itself out live. */
-function partialEvents(text: string): ScriptEvent[] {
+/** Two growing partials so a line (interim STT, or the agent reply) types itself out live. */
+function partialEvents(text: string, role: string): ScriptEvent[] {
   const words = text.split(' ')
   if (words.length < 3) return []
   const mid = Math.max(1, Math.floor(words.length / 2))
   return [words.slice(0, mid), words.slice(0, words.length - 1)].map((w) => ({
     type: 'partial_transcript',
-    data: { role: 'caller', text: w.join(' ') },
+    data: { role, text: w.join(' ') },
   }))
 }
 
-/** A caller turn on the wire: interim partials typing out, then the finalized turn. */
+/** A turn on the wire: partials typing out (by role), then the finalized turn. */
 function callerTurnEvents(turn: Turn): ScriptEvent[] {
-  return [...partialEvents(turn.text), transcriptEvent(turn)]
+  return [...partialEvents(turn.text, 'caller'), transcriptEvent(turn)]
+}
+
+function agentTurnEvents(turn: Turn): ScriptEvent[] {
+  return [...partialEvents(turn.text, 'assistant'), transcriptEvent(turn)]
 }
 
 /**
@@ -155,7 +159,7 @@ function toEvents(scenario: Scenario): ScriptEvent[] {
       questionIndex += 1
       events.push(
         stateEvent('speaking', { question_index: questionIndex, question_total: questionTotal }),
-        transcriptEvent(turn),
+        ...agentTurnEvents(turn),
       )
     } else {
       events.push(stateEvent('listening'), ...callerTurnEvents(turn), stateEvent('thinking'))

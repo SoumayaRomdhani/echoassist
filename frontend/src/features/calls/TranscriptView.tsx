@@ -17,14 +17,14 @@ export function TranscriptView({
 }: {
   turns: TranscriptTurnOut[]
   live?: boolean
-  /** The caller's words as they speak (interim STT), shown as a live typing bubble. */
-  partial?: string | null
+  /** A turn being produced live (caller interim STT or agent reply), shown as a typing bubble. */
+  partial?: { role: string; text: string } | null
 }) {
   const endRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [turns.length, partial])
+  }, [turns.length, partial?.text])
 
   return (
     <div className="flex h-full flex-col rounded-2xl border border-border bg-surface">
@@ -86,20 +86,35 @@ export function TranscriptView({
           })
         )}
         {partial ? (
-          <div className="flex flex-row-reverse gap-3">
-            <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-foreground/[0.08] text-foreground">
-              <User className="size-4" />
-            </div>
-            <div className="max-w-[80%] rounded-2xl bg-accent/10 px-4 py-2.5 text-sm opacity-70">
-              <p className="mb-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
-                Caller
-              </p>
-              <p className="leading-relaxed">
-                {partial}
-                <span className="ml-0.5 inline-block h-4 w-px translate-y-0.5 animate-pulse bg-current" />
-              </p>
-            </div>
-          </div>
+          (() => {
+            const isAssistant = partial.role === 'assistant'
+            return (
+              <div className={cn('flex gap-3', isAssistant ? '' : 'flex-row-reverse')}>
+                <div
+                  className={cn(
+                    'flex size-8 shrink-0 items-center justify-center rounded-full',
+                    isAssistant ? 'bg-accent/15 text-accent' : 'bg-foreground/[0.08] text-foreground',
+                  )}
+                >
+                  {isAssistant ? <Bot className="size-4" /> : <User className="size-4" />}
+                </div>
+                <div
+                  className={cn(
+                    'max-w-[80%] rounded-2xl px-4 py-2.5 text-sm opacity-70',
+                    isAssistant ? 'bg-foreground/[0.04]' : 'bg-accent/10',
+                  )}
+                >
+                  <p className="mb-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted">
+                    {speakerLabel(partial.role)}
+                  </p>
+                  <p className="leading-relaxed">
+                    {partial.text}
+                    <span className="ml-0.5 inline-block h-4 w-px translate-y-0.5 animate-pulse bg-current" />
+                  </p>
+                </div>
+              </div>
+            )
+          })()
         ) : null}
         <div ref={endRef} />
       </div>

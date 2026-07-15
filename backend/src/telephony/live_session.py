@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING
@@ -180,6 +181,36 @@ def _partial_emitter(sink: CallEventSink):
     return on_partial
 
 
+def _agent_text_emitter(sink: CallEventSink, *, min_interval_s: float = 0.08):
+    """A per-turn ``on_agent_text`` callback: broadcast the agent's reply *as it's written*.
+
+    Accumulates the LLM's deltas and emits the running text as ``partial_transcript`` events,
+    so the dashboard types the answer out token by token instead of after the whole reply.
+    Citations are stripped (they surface as chips on the finalized turn) and emits are
+    throttled so a fast token stream doesn't flood the bus. The final ``transcript`` turn
+    supersedes the partial on the UI side.
+    """
+    from src.agent.grounding import strip_citations
+
+    acc = ""
+    last_text = ""
+    last_emit = 0.0
+
+    def on_text(delta: str) -> None:
+        nonlocal acc, last_text, last_emit
+        acc += delta
+        now = time.monotonic()
+        if now - last_emit < min_interval_s:
+            return
+        text = strip_citations(acc).strip()
+        if text and text != last_text:
+            last_text = text
+            last_emit = now
+            sink.emit("partial_transcript", {"role": "assistant", "text": text})
+
+    return on_text
+
+
 def _progress(index: int, total: int) -> dict:
     """Question-progress fields for an ``agent_state`` event (omitted when total unknown)."""
     if total > 0:
@@ -316,7 +347,9 @@ async def _run_interview(
                 # drains the stream so the turn is recorded even when interrupted. (Citations are
                 # stripped before TTS; the answer is still grounded — sources live in the notes.)
                 transcript, is_rag, audio_stream = await pipeline.interview_turn_streaming(
-                    transport.listen(), on_partial=_partial_emitter(sink)
+                    transport.listen(),
+                    on_partial=_partial_emitter(sink),
+                    on_agent_text=_agent_text_emitter(sink),
                 )
                 print(f"\n{bold('CALLER:')} {transcript or '(silence)'}")
                 _emit_transcript(sink, "caller", transcript)

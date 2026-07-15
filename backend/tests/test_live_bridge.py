@@ -40,24 +40,21 @@ def _manager() -> tuple[CallEventHub, CallManager]:
 
 
 @pytest.mark.asyncio
-async def test_redis_sink_publishes_event_json() -> None:
+async def test_redis_sink_publishes_events_in_order() -> None:
     fake = _FakeRedis()
     sink = RedisCallEventSink(fake, "chan", "call9")
 
+    sink.emit("status", {"status": "started", "domain": "helpdesk"})
     sink.emit("agent_state", {"state": "listening"})
     sink.emit("status", {"status": "completed"}, terminal=True)
-    await sink.aclose()  # drains the fire-and-forget publish tasks
+    await sink.aclose()  # flushes the queue (incl. the terminal event) in order
 
-    assert len(fake.published) == 2
     assert all(chan == "chan" for chan, _ in fake.published)
     payloads = [json.loads(p) for _, p in fake.published]
-    assert {
-        "call_id": "call9",
-        "type": "agent_state",
-        "data": {"state": "listening"},
-        "terminal": False,
-    } in payloads
-    assert any(p["type"] == "status" and p["terminal"] for p in payloads)
+    # Order is preserved — the 'started' event (carrying the domain) is delivered first.
+    assert [p["type"] for p in payloads] == ["status", "agent_state", "status"]
+    assert payloads[0]["data"]["domain"] == "helpdesk"
+    assert payloads[-1]["terminal"] is True
 
 
 def test_bridge_registers_call_and_refans_to_hub() -> None:
@@ -96,6 +93,27 @@ def test_bridge_registers_call_and_refans_to_hub() -> None:
                     "terminal": True})
     )
     assert manager.get("m1") not in manager.live()
+
+
+def test_status_domain_corrects_a_call_registered_under_the_default() -> None:
+    hub, manager = _manager()
+    bridge = LiveCallBridge(
+        hub=hub, call_manager=manager, redis_client=_FakeRedis(), channel="ch",
+        default_domain="screening", default_campaign="camp",
+    )
+
+    # An event without a domain registers the call under the bridge's default…
+    bridge.dispatch(
+        json.dumps({"call_id": "m2", "type": "agent_state", "data": {"state": "listening"}})
+    )
+    assert manager.get("m2").domain == "screening"
+
+    # …then the 'started' event (which carries the real domain) corrects it.
+    bridge.dispatch(
+        json.dumps({"call_id": "m2", "type": "status",
+                    "data": {"status": "started", "domain": "helpdesk"}})
+    )
+    assert manager.get("m2").domain == "helpdesk"
 
 
 def test_bridge_ignores_malformed_frames() -> None:

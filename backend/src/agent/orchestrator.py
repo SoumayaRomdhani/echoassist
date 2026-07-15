@@ -234,7 +234,7 @@ class VoicePipeline:
         return self._dialogue is not None and self._dialogue.finished
 
     async def interview_turn_streaming(
-        self, audio, *, on_partial=None
+        self, audio, *, on_partial=None, on_agent_text=None
     ) -> tuple[str, bool, AsyncIterator[AudioChunk]]:
         """Streaming interview turn: returns (caller transcript, is_rag, agent audio stream).
 
@@ -242,7 +242,9 @@ class VoicePipeline:
         can cover the wait with a filler on grounded turns only — it never changes what the
         caller hears. After consuming the stream, ``interview_finished`` tells you whether the
         interview ended and the recorded reply is in the call state. ``on_partial`` (optional)
-        receives interim transcripts so the UI can show the caller's words as they speak.
+        receives interim caller transcripts; ``on_agent_text`` (optional) receives the agent's
+        reply deltas as the LLM generates them, for a live "typewriter" transcript. Both fire
+        while the returned audio stream is consumed.
         """
         from src.agent.grounding import strip_citations
         from src.agent.streaming import synthesize_streaming
@@ -257,6 +259,7 @@ class VoicePipeline:
         audio_stream = synthesize_streaming(
             text_stream, self._tts, clean=strip_citations,
             coalesce_sentences=self._stream_coalesce, policy=self._chunk_policy,
+            on_text=on_agent_text,
         )
         return transcript.text, is_rag, audio_stream
 

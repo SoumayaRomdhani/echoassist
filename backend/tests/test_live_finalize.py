@@ -56,7 +56,7 @@ class _FakePipeline:
         return "First question?", _chunk()
 
     async def interview_turn_streaming(
-        self, audio: AsyncIterator[AudioChunk], *, on_partial=None
+        self, audio: AsyncIterator[AudioChunk], *, on_partial=None, **_kw
     ) -> tuple[str, bool, AsyncIterator[AudioChunk]]:
         self._n += 1
         if self._hangup_at is not None and self._n >= self._hangup_at:

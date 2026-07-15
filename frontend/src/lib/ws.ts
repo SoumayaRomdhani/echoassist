@@ -29,8 +29,11 @@ export interface LiveCallState {
   volume: number | null
   /** Structured-interview progress, when known. */
   progress: CallProgress | null
-  /** The caller's words as they speak (interim STT), shown until the final turn lands. */
-  partialCaller: string | null
+  /**
+   * A turn being produced live — the caller's words as they speak (interim STT) or the
+   * agent's reply as the LLM writes it — shown as a typing bubble until the final turn lands.
+   */
+  partial: { role: string; text: string } | null
 }
 
 export const initialLiveState: LiveCallState = {
@@ -46,7 +49,7 @@ export const initialLiveState: LiveCallState = {
   agentState: 'idle',
   volume: null,
   progress: null,
-  partialCaller: null,
+  partial: null,
 }
 
 const AGENT_STATES: readonly AgentState[] = ['idle', 'listening', 'thinking', 'speaking']
@@ -75,7 +78,7 @@ export function foldEvent(state: LiveCallState, event: CallEvent): LiveCallState
         done,
         // A finished call has no active agent phase — settle the orb, drop any partial.
         agentState: done ? 'idle' : state.agentState,
-        partialCaller: done ? null : state.partialCaller,
+        partial: done ? null : state.partial,
       }
     }
     case 'agent_state': {
@@ -98,11 +101,14 @@ export function foldEvent(state: LiveCallState, event: CallEvent): LiveCallState
         text: String(event.data.text ?? ''),
         ...(citations ? { citations } : {}),
       }
-      // The finalized turn supersedes any interim partial for that speaker.
-      return { ...state, turns: [...state.turns, turn], partialCaller: null }
+      // The finalized turn supersedes any interim partial (caller or agent).
+      return { ...state, turns: [...state.turns, turn], partial: null }
     }
-    case 'partial_transcript':
-      return { ...state, partialCaller: String(event.data.text ?? '') || null }
+    case 'partial_transcript': {
+      const text = String(event.data.text ?? '')
+      const role = String(event.data.role ?? 'caller')
+      return { ...state, partial: text ? { role, text } : null }
+    }
     case 'consent':
       return {
         ...state,
