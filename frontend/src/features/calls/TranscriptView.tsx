@@ -1,8 +1,10 @@
-import { Bot, Radio, User } from 'lucide-react'
+import { Bot, Loader2, User } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/cn'
-import type { TranscriptTurnOut } from '@/lib/types'
+import type { AgentState, TranscriptTurnOut } from '@/lib/types'
+import type { CallProgress } from '@/lib/ws'
+import { LiveStatus } from './LiveStatus'
 
 function speakerLabel(role: string): string {
   if (role === 'assistant') return 'EchoAssist'
@@ -15,6 +17,9 @@ export function TranscriptView({
   live,
   partial,
   pending,
+  agentState = 'idle',
+  progress = null,
+  step = null,
 }: {
   turns: TranscriptTurnOut[]
   live?: boolean
@@ -22,6 +27,12 @@ export function TranscriptView({
   partial?: { role: string; text: string } | null
   /** The agent is working but hasn't produced text yet — show a shimmering placeholder reply. */
   pending?: boolean
+  /** The agent's current phase — drives the micro-orb in the header (live only). */
+  agentState?: AgentState
+  /** Interview progress for the header. */
+  progress?: CallProgress | null
+  /** The concrete pipeline sub-step, shown as the shimmer bubble's caption. */
+  step?: string | null
 }) {
   const endRef = useRef<HTMLDivElement>(null)
 
@@ -35,12 +46,7 @@ export function TranscriptView({
         <h3 className="font-display text-sm font-semibold uppercase tracking-wide text-muted">
           Transcript
         </h3>
-        {live ? (
-          <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--c-accent-3)]">
-            <Radio className="size-3.5 animate-pulse" />
-            Live
-          </span>
-        ) : null}
+        {live ? <LiveStatus agentState={agentState} progress={progress} /> : null}
       </div>
 
       <div className="max-h-[62vh] flex-1 space-y-4 overflow-y-auto p-5 scrollbar-thin">
@@ -124,12 +130,19 @@ export function TranscriptView({
               <Bot className="size-4" />
             </div>
             <div
-              className="max-w-[80%] space-y-2 rounded-2xl bg-foreground/[0.04] px-4 py-3.5"
+              className="max-w-[80%] rounded-2xl bg-foreground/[0.04] px-4 py-3.5"
               aria-label="EchoAssist is preparing a reply"
             >
-              <div className="h-2.5 w-44 animate-pulse rounded bg-foreground/10" />
-              <div className="h-2.5 w-56 animate-pulse rounded bg-foreground/10 [animation-delay:150ms]" />
-              <div className="h-2.5 w-32 animate-pulse rounded bg-foreground/10 [animation-delay:300ms]" />
+              <div className="space-y-2">
+                <div className="h-2.5 w-44 animate-pulse rounded bg-foreground/10" />
+                <div className="h-2.5 w-56 animate-pulse rounded bg-foreground/10 [animation-delay:150ms]" />
+                <div className="h-2.5 w-32 animate-pulse rounded bg-foreground/10 [animation-delay:300ms]" />
+              </div>
+              {/* The state lives in the flow: the concrete pipeline step, right where the reply lands. */}
+              <p className="mt-2.5 flex items-center gap-1.5 text-xs font-medium text-muted">
+                <Loader2 className="size-3.5 animate-spin" />
+                {step ?? 'Thinking…'}
+              </p>
             </div>
           </div>
         ) : null}
