@@ -111,7 +111,11 @@ export function CallDetailPage({ callId, onBack }: { callId: string; onBack: () 
             pending={
               showLive &&
               (live.agentState === 'thinking' || live.agentState === 'speaking') &&
-              live.partial?.role !== 'assistant'
+              live.partial?.role !== 'assistant' &&
+              // Only when the agent owes a not-yet-shown reply (i.e. right after a caller
+              // turn). Pre-synthesized lines — disclosure/greeting/question — show their text
+              // immediately, so no "preparing…" placeholder while the agent is already talking.
+              turns[turns.length - 1]?.role === 'caller'
             }
             agentState={live.agentState}
             progress={live.progress}

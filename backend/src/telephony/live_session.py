@@ -268,8 +268,10 @@ async def _greet_and_consent(
     """Disclosure → spoken consent → audit log. Returns True if the call may proceed."""
     disclosure_text, audio = await pipeline.speak_disclosure()
     sink.emit("agent_state", {"state": "speaking"})
-    await _say(transport, "AGENT (disclosure):", disclosure_text, audio)
+    # These lines are pre-synthesized (not token-streamed), so show the text BEFORE playback —
+    # otherwise the dashboard shows a "preparing…" placeholder while the agent is already talking.
     _emit_transcript(sink, "assistant", disclosure_text)
+    await _say(transport, "AGENT (disclosure):", disclosure_text, audio)
 
     print(dim("\n[listening — the caller answers the consent question, then pauses]"))
     sink.emit("agent_state", {"state": "listening"})
@@ -281,8 +283,8 @@ async def _greet_and_consent(
     _emit_transcript(sink, "caller", consent.transcript)
     sink.emit("agent_state", {"state": "thinking"})
     sink.emit("agent_state", {"state": "speaking"})
-    await _say(transport, "AGENT:", consent.reply, consent.audio)
     _emit_transcript(sink, "assistant", consent.reply)
+    await _say(transport, "AGENT:", consent.reply, consent.audio)
     await _record_consent(
         settings, call_id=call_id, disclosure_text=disclosure_text, consent=consent
     )
@@ -306,8 +308,8 @@ async def _run_conversation(
         _emit_transcript(sink, "caller", result.transcript)
         sink.emit("agent_state", {"state": "thinking"})
         sink.emit("agent_state", {"state": "speaking"})
-        await _say(transport, "AGENT:", result.reply, result.audio)
         _emit_transcript(sink, "assistant", result.reply)
+        await _say(transport, "AGENT:", result.reply, result.audio)
         t = result.timings
         print(dim(
             f"latency  stt={t.stt_ms:.0f}ms  llm={t.llm_ms:.0f}ms  "
@@ -334,8 +336,9 @@ async def _run_interview(
     question_index = 1
     question_text, question_audio = await pipeline.begin_interview()
     sink.emit("agent_state", {"state": "speaking", **_progress(question_index, total)})
-    await _say(transport, "AGENT:", question_text, question_audio)
+    # Pre-synthesized question — show it before playback (see the disclosure note above).
     _emit_transcript(sink, "assistant", question_text)
+    await _say(transport, "AGENT:", question_text, question_audio)
 
     turn_id = 0
     try:
