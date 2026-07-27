@@ -20,6 +20,9 @@ export interface EchoAssistConfig {
   useMocks?: boolean
 }
 
+/** Top-level workspace sections, driven by the host shell's sidebar. */
+export type AgentSection = 'overview' | 'calls' | 'metrics' | 'config'
+
 /** Config with defaults applied, provided to components via context. */
 export interface ResolvedConfig {
   apiBaseUrl: string

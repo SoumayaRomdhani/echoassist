@@ -1,17 +1,10 @@
-import { AlertTriangle } from 'lucide-react'
 import { BrandMark } from '@/components/BrandMark'
-import { EmptyState } from '@/components/EmptyState'
 import { Badge } from '@/components/ui/badge'
-import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useAgentDomain } from '@/embed/AgentConfigContext'
-import { CallList } from '@/features/calls/CallList'
-import { LiveCallsBanner } from '@/features/calls/LiveCallsBanner'
-import { StartCallDialog } from '@/features/calls/StartCallDialog'
+import { CallsTab } from '@/features/calls/CallsTab'
 import { DomainConfigPage } from '@/features/config/DomainConfigPage'
 import { MetricsPage } from '@/features/metrics/MetricsPage'
-import { ApiError } from '@/lib/api'
-import { useCalls } from '@/lib/query'
 
 export function AgentDetailPage({ onOpenCall }: { onOpenCall: (callId: string) => void }) {
   const domain = useAgentDomain()
@@ -57,56 +50,3 @@ export function AgentDetailPage({ onOpenCall }: { onOpenCall: (callId: string) =
   )
 }
 
-function CallsTab({
-  domain,
-  onOpenCall,
-}: {
-  domain: string
-  onOpenCall: (callId: string) => void
-}) {
-  const { data, isLoading, isError, error } = useCalls({ domain, limit: 100 })
-
-  return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h2 className="font-display text-lg font-semibold capitalize">{domain} calls</h2>
-          <p className="text-sm text-muted">
-            Every call with its live transcript, structured notes, summary, and consent record.
-          </p>
-        </div>
-        <StartCallDialog domain={domain} onStarted={onOpenCall} />
-      </div>
-
-      <LiveCallsBanner domain={domain} onOpenCall={onOpenCall} />
-
-      {isLoading ? (
-        <Skeleton className="h-64 rounded-2xl" />
-      ) : isError ? (
-        <BackendError error={error} />
-      ) : (
-        <CallList
-          calls={data?.items ?? []}
-          onSelect={onOpenCall}
-          emptyAction={<StartCallDialog domain={domain} onStarted={onOpenCall} />}
-        />
-      )}
-    </div>
-  )
-}
-
-function BackendError({ error }: { error: unknown }) {
-  const message =
-    error instanceof ApiError
-      ? error.status === 0
-        ? 'Cannot reach the backend.'
-        : error.detail
-      : 'Something went wrong.'
-  return (
-    <EmptyState
-      icon={AlertTriangle}
-      title="Couldn't load calls"
-      description={`${message} Check that the API is running, or set VITE_USE_MOCKS=true for the in-browser demo.`}
-    />
-  )
-}

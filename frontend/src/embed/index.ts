@@ -18,4 +18,4 @@
  * ACTEEK provides the marketplace, sidebar, theme, and auth.
  */
 export { EchoAssistAgent, type EchoAssistAgentProps } from './EchoAssistAgent'
-export type { EchoAssistConfig } from './types'
+export type { AgentSection, EchoAssistConfig } from './types'
