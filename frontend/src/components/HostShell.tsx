@@ -1,6 +1,5 @@
 import {
   BarChart3,
-  Bell,
   LayoutGrid,
   LogOut,
   PhoneCall,
@@ -13,6 +12,7 @@ import { useAuth } from '@/auth/AuthProvider'
 import type { AgentSection } from '@/embed/types'
 import { cn } from '@/lib/cn'
 import { BrandMark } from './BrandMark'
+import { NotificationBell } from './NotificationBell'
 import { ReadinessIndicator } from './ReadinessIndicator'
 import { ThemeToggle } from './ThemeToggle'
 
@@ -46,11 +46,15 @@ export function HostShell({
   section,
   onSection,
   domainSlot,
+  searchValue = '',
+  onSearch,
   children,
 }: {
   section: AgentSection
   onSection: (section: AgentSection) => void
   domainSlot?: ReactNode
+  searchValue?: string
+  onSearch?: (value: string) => void
   children: ReactNode
 }) {
   const { user, signOut } = useAuth()
@@ -138,20 +142,15 @@ export function HostShell({
             <Search className="size-4 shrink-0" />
             <input
               type="search"
-              placeholder="Search calls, candidates, sources…"
+              value={searchValue}
+              onChange={(e) => onSearch?.(e.target.value)}
+              placeholder="Search calls by id, domain, or status…"
               className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted"
             />
           </label>
           <div className="ml-auto flex items-center gap-2.5">
             {domainSlot}
-            <button
-              type="button"
-              aria-label="Notifications"
-              className="relative grid size-9 place-items-center rounded-xl border border-border text-muted transition-colors hover:border-accent/40 hover:text-foreground"
-            >
-              <span className="absolute right-2 top-2 size-1.5 rounded-full bg-[var(--c-accent-3)]" />
-              <Bell className="size-[18px]" />
-            </button>
+            <NotificationBell />
             <ReadinessIndicator />
             <ThemeToggle />
             <span className="grid size-9 place-items-center rounded-full bg-accent/15 font-display text-sm font-bold text-accent ring-1 ring-accent/20">

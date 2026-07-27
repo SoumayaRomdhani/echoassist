@@ -14,12 +14,22 @@ import { StartCallDialog } from './StartCallDialog'
  */
 export function CallsTab({
   domain,
+  query = '',
   onOpenCall,
 }: {
   domain: string
+  query?: string
   onOpenCall: (callId: string) => void
 }) {
   const { data, isLoading, isError, error } = useCalls({ domain, limit: 100 })
+  const q = query.trim().toLowerCase()
+  const items = (data?.items ?? []).filter(
+    (c) =>
+      !q ||
+      c.call_id.toLowerCase().includes(q) ||
+      c.domain.toLowerCase().includes(q) ||
+      c.status.toLowerCase().includes(q),
+  )
 
   return (
     <div className="space-y-5">
@@ -41,9 +51,9 @@ export function CallsTab({
         <BackendError error={error} />
       ) : (
         <CallList
-          calls={data?.items ?? []}
+          calls={items}
           onSelect={onOpenCall}
-          emptyAction={<StartCallDialog domain={domain} onStarted={onOpenCall} />}
+          emptyAction={q ? undefined : <StartCallDialog domain={domain} onStarted={onOpenCall} />}
         />
       )}
     </div>

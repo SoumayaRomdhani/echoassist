@@ -11,7 +11,7 @@ import {
   UserRound,
   type LucideIcon,
 } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { computeMetrics } from '@/features/metrics/metrics'
 import { cn } from '@/lib/cn'
@@ -20,26 +20,34 @@ import { useCalls, useLiveCalls } from '@/lib/query'
 import type { CallOut, CallStatus } from '@/lib/types'
 
 const DAY = 86_400_000
+const HOUR = 3_600_000
 const pct = (v: number) => `${Math.round(v * 100)}%`
 const rate = (a: number, b: number) => (b ? a / b : 0)
 
+type Range = 'Day' | 'Week' | 'Month'
+type Filter = 'All' | 'Completed' | 'Declined'
+
 /**
- * The workspace home — a SaaS overview built entirely from the calls API: a live-call
- * strip, four operational tiles (with real week-over-week deltas), a calls-this-week
- * area chart, an outcome donut, and the most recent calls. No fabricated trends: the
- * deltas compare the last 7 days to the 7 before, from each call's timestamp.
+ * The workspace home — a SaaS overview built entirely from the calls API. All controls
+ * are live: the chart range re-buckets, the table filter and the top-bar search filter
+ * the recent calls. Deltas are real week-over-week (last 7 days vs the 7 before), and
+ * read "new" when there's no prior baseline — never fabricated.
  */
 export function OverviewPage({
   domain,
+  query = '',
   onOpenCall,
   onSeeAllCalls,
 }: {
   domain: string
+  query?: string
   onOpenCall: (callId: string) => void
   onSeeAllCalls: () => void
 }) {
   const { data, isLoading } = useCalls({ domain, limit: 200 })
   const { data: liveData } = useLiveCalls(domain)
+  const [range, setRange] = useState<Range>('Week')
+  const [filter, setFilter] = useState<Filter>('All')
 
   if (isLoading) {
     return (
@@ -70,35 +78,31 @@ export function OverviewPage({
   const m = computeMetrics(calls)
   const mW = computeMetrics(week)
   const mP = computeMetrics(prev)
-  // Rate deltas need a prior week to compare against; without one they'd overstate.
   const rd = (a: number, b: number) => (prev.length ? Math.round((a - b) * 100) : null)
 
   const tiles: TileData[] = [
-    {
-      label: 'Calls handled', value: String(m.total), hint: `${week.length} this week`,
-      icon: PhoneCall, tone: 'accent', delta: week.length - prev.length, unit: '',
-    },
-    {
-      label: 'Completion rate', value: pct(rate(m.completed, m.total)),
-      hint: 'interviews reaching close', icon: BarChart3, tone: 'emerald',
-      delta: rd(rate(mW.completed, mW.total), rate(mP.completed, mP.total)), unit: 'pt',
-    },
-    {
-      label: 'Consent captured', value: pct(m.consentRate), hint: 'audit trail complete',
-      icon: ShieldCheck, tone: 'violet', delta: rd(mW.consentRate, mP.consentRate), unit: 'pt',
-    },
-    {
-      label: 'Notes coverage', value: pct(m.notesCoverage), hint: 'structured notes on file',
-      icon: FileText, tone: 'pink', delta: rd(mW.notesCoverage, mP.notesCoverage), unit: 'pt',
-    },
+    { label: 'Calls handled', value: String(m.total), hint: `${week.length} this week`, icon: PhoneCall, tone: 'accent', delta: week.length - prev.length, unit: '' },
+    { label: 'Completion rate', value: pct(rate(m.completed, m.total)), hint: 'interviews reaching close', icon: BarChart3, tone: 'emerald', delta: rd(rate(mW.completed, mW.total), rate(mP.completed, mP.total)), unit: 'pt' },
+    { label: 'Consent captured', value: pct(m.consentRate), hint: 'audit trail complete', icon: ShieldCheck, tone: 'violet', delta: rd(mW.consentRate, mP.consentRate), unit: 'pt' },
+    { label: 'Notes coverage', value: pct(m.notesCoverage), hint: 'structured notes on file', icon: FileText, tone: 'pink', delta: rd(mW.notesCoverage, mP.notesCoverage), unit: 'pt' },
   ]
 
-  const daily = dailyCounts(calls, now)
-  const recent = calls.slice(0, 6)
+  const chart = buckets(calls, range, now)
+
+  // Recent calls: apply the segmented filter and the top-bar search, live call pinned first.
+  const q = query.trim().toLowerCase()
+  const matchesFilter = (c: CallOut) =>
+    filter === 'All' ||
+    (filter === 'Completed' && c.status === 'completed') ||
+    (filter === 'Declined' && c.status === 'declined')
+  const matchesQuery = (c: CallOut) =>
+    !q || c.call_id.toLowerCase().includes(q) || c.domain.toLowerCase().includes(q) || c.status.toLowerCase().includes(q)
+  const filtered = calls.filter((c) => matchesFilter(c) && matchesQuery(c))
+  const showLive = live && matchesFilter(live) && matchesQuery(live)
+  const recent = (showLive ? [live, ...filtered.filter((c) => c.call_id !== live.call_id)] : filtered).slice(0, 6)
 
   return (
     <div className="space-y-5">
-      {/* LIVE STRIP */}
       {live ? (
         <button
           type="button"
@@ -106,9 +110,7 @@ export function OverviewPage({
           className="group flex w-full items-center gap-3 rounded-2xl border border-[var(--c-accent-3)]/40 bg-gradient-to-r from-[var(--c-accent-3)]/[0.1] to-surface px-5 py-3.5 text-left"
         >
           <Radio className="size-4 animate-pulse text-[var(--c-accent-3)]" />
-          <span className="font-display text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--c-accent-3)]">
-            Live now
-          </span>
+          <span className="font-display text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--c-accent-3)]">Live now</span>
           <span className="font-medium">{titleCase(live.domain)} call</span>
           <span className="text-sm text-muted">· started {formatRelative(live.created_at)}</span>
           <span className="ml-auto inline-flex items-center gap-1 text-sm font-semibold text-[var(--c-accent-3)]">
@@ -117,17 +119,19 @@ export function OverviewPage({
         </button>
       ) : null}
 
-      {/* TILES */}
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {tiles.map((t) => (
           <StatTile key={t.label} {...t} />
         ))}
       </section>
 
-      {/* CHART + DONUT */}
       <section className="grid gap-4 lg:grid-cols-[1.6fr_1fr]">
-        <Panel title="Calls this week" sub="new calls per day" right={<Segmented options={['Day', 'Week', 'Month']} active="Week" />}>
-          <AreaChart daily={daily} />
+        <Panel
+          title="Calls this week"
+          sub={RANGE_SUB[range]}
+          right={<Segmented options={['Day', 'Week', 'Month']} value={range} onChange={(v) => setRange(v as Range)} />}
+        >
+          <AreaChart values={chart.values} axis={chart.axis} />
         </Panel>
 
         <Panel title="Outcomes" sub={`last ${m.total} calls`}>
@@ -135,21 +139,29 @@ export function OverviewPage({
         </Panel>
       </section>
 
-      {/* RECENT CALLS */}
       <Panel
         title="Recent calls"
-        sub="live transcript, notes, summary & consent per call"
+        sub={q ? `matching “${query.trim()}”` : 'live transcript, notes, summary & consent per call'}
         right={
-          <button type="button" onClick={onSeeAllCalls} className="text-sm font-medium text-accent transition-opacity hover:opacity-80">
-            See all
-          </button>
+          <div className="flex items-center gap-3">
+            <Segmented options={['All', 'Completed', 'Declined']} value={filter} onChange={(v) => setFilter(v as Filter)} />
+            <button type="button" onClick={onSeeAllCalls} className="text-sm font-medium text-accent transition-opacity hover:opacity-80">
+              See all
+            </button>
+          </div>
         }
         flush
       >
-        <RecentCalls calls={recent} liveCall={live} onOpenCall={onOpenCall} />
+        <RecentCalls calls={recent} liveId={live?.call_id} onOpenCall={onOpenCall} />
       </Panel>
     </div>
   )
+}
+
+const RANGE_SUB: Record<Range, string> = {
+  Day: 'new calls per hour, last 24h',
+  Week: 'new calls per day, last 7 days',
+  Month: 'new calls per day, last 30 days',
 }
 
 /* ---------- tiles ---------- */
@@ -166,11 +178,8 @@ const TONE: Record<TileData['tone'], string> = {
 function StatTile({ label, value, hint, icon: Icon, tone, delta, unit }: TileData) {
   const Arrow = delta == null || delta === 0 ? Minus : delta > 0 ? ArrowUpRight : ArrowDownRight
   const dc =
-    delta != null && delta > 0
-      ? 'text-emerald-500'
-      : delta != null && delta < 0
-        ? 'text-[var(--c-accent-3)]'
-        : 'text-muted'
+    delta != null && delta > 0 ? 'text-emerald-500'
+      : delta != null && delta < 0 ? 'text-[var(--c-accent-3)]' : 'text-muted'
   const dl = delta == null ? 'new' : delta === 0 ? 'stable' : `${Math.abs(delta)}${unit}`
   return (
     <div className="rounded-2xl border border-border bg-surface p-5">
@@ -192,7 +201,7 @@ function StatTile({ label, value, hint, icon: Icon, tone, delta, unit }: TileDat
   )
 }
 
-/* ---------- panel shell ---------- */
+/* ---------- panel + segmented ---------- */
 function Panel({
   title, sub, right, flush, children,
 }: {
@@ -200,10 +209,10 @@ function Panel({
 }) {
   return (
     <section className="rounded-2xl border border-border bg-surface">
-      <div className="flex items-center justify-between border-b border-border px-5 py-3.5">
-        <div>
+      <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-3.5">
+        <div className="min-w-0">
           <h3 className="font-display text-[15px] font-semibold">{title}</h3>
-          {sub ? <p className="text-xs text-muted">{sub}</p> : null}
+          {sub ? <p className="truncate text-xs text-muted">{sub}</p> : null}
         </div>
         {right}
       </div>
@@ -212,49 +221,67 @@ function Panel({
   )
 }
 
-function Segmented({ options, active }: { options: string[]; active: string }) {
+function Segmented({ options, value, onChange }: { options: string[]; value: string; onChange: (v: string) => void }) {
   return (
-    <div className="flex gap-0.5 rounded-lg border border-border bg-foreground/[0.03] p-0.5">
+    <div className="flex shrink-0 gap-0.5 rounded-lg border border-border bg-foreground/[0.03] p-0.5">
       {options.map((o) => (
-        <span
+        <button
           key={o}
+          type="button"
+          onClick={() => onChange(o)}
           className={cn(
-            'rounded-md px-2.5 py-1 text-xs font-medium',
-            o === active ? 'bg-surface text-foreground shadow-sm' : 'text-muted',
+            'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+            o === value ? 'bg-surface text-foreground shadow-sm' : 'text-muted hover:text-foreground',
           )}
         >
           {o}
-        </span>
+        </button>
       ))}
     </div>
   )
 }
 
 /* ---------- area chart ---------- */
-function dailyCounts(calls: CallOut[], now: number): { label: string; count: number }[] {
-  const labels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-  return Array.from({ length: 7 }, (_, i) => {
-    const start = new Date(now - (6 - i) * DAY)
-    start.setHours(0, 0, 0, 0)
-    const from = start.getTime()
-    const count = calls.filter((c) => {
+function buckets(calls: CallOut[], range: Range, now: number): { values: number[]; axis: string[] } {
+  const count = (from: number, span: number) =>
+    calls.filter((c) => {
       const t = new Date(c.created_at).getTime()
-      return t >= from && t < from + DAY
+      return t >= from && t < from + span
     }).length
-    return { label: labels[start.getDay()], count }
-  })
+
+  if (range === 'Day') {
+    const base = new Date(now)
+    base.setMinutes(0, 0, 0)
+    const start = base.getTime() - 23 * HOUR
+    const values = Array.from({ length: 24 }, (_, i) => count(start + i * HOUR, HOUR))
+    return { values, axis: ['24h', '18h', '12h', '6h', 'now'] }
+  }
+  if (range === 'Month') {
+    const base = new Date(now)
+    base.setHours(0, 0, 0, 0)
+    const start = base.getTime() - 29 * DAY
+    const values = Array.from({ length: 30 }, (_, i) => count(start + i * DAY, DAY))
+    return { values, axis: ['30d', '3w', '2w', '1w', 'now'] }
+  }
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+  const base = new Date(now)
+  base.setHours(0, 0, 0, 0)
+  const start = base.getTime() - 6 * DAY
+  const values = Array.from({ length: 7 }, (_, i) => count(start + i * DAY, DAY))
+  const axis = Array.from({ length: 7 }, (_, i) => days[new Date(start + i * DAY).getDay()])
+  return { values, axis }
 }
-function AreaChart({ daily }: { daily: { label: string; count: number }[] }) {
+function AreaChart({ values, axis }: { values: number[]; axis: string[] }) {
   const W = 640
   const H = 180
-  const max = Math.max(1, ...daily.map((d) => d.count))
-  const x = (i: number) => (i / (daily.length - 1)) * W
+  const max = Math.max(1, ...values)
+  const x = (i: number) => (values.length <= 1 ? W / 2 : (i / (values.length - 1)) * W)
   const y = (v: number) => H - 14 - (v / max) * (H - 34)
-  const line = daily.map((d, i) => `${x(i).toFixed(1)},${y(d.count).toFixed(1)}`).join(' L ')
-  const peak = daily.reduce((a, d, i) => (d.count >= daily[a].count ? i : a), 0)
+  const line = values.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' L ')
+  const peak = values.reduce((a, v, i) => (v >= values[a] ? i : a), 0)
   return (
     <>
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none" role="img" aria-label="Calls per day this week">
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" height={H} preserveAspectRatio="none" role="img" aria-label="Calls over time">
         <defs>
           <linearGradient id="ov-fill" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0" stopColor="var(--c-accent)" stopOpacity="0.28" />
@@ -266,11 +293,11 @@ function AreaChart({ daily }: { daily: { label: string; count: number }[] }) {
         ))}
         <path d={`M ${line} L ${W},${H} L 0,${H} Z`} fill="url(#ov-fill)" />
         <path d={`M ${line}`} fill="none" stroke="var(--c-accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-        <circle cx={x(peak)} cy={y(daily[peak].count)} r="4.5" fill="var(--c-accent)" stroke="var(--c-surface)" strokeWidth="2" />
+        <circle cx={x(peak)} cy={y(values[peak])} r="4.5" fill="var(--c-accent)" stroke="var(--c-surface)" strokeWidth="2" />
       </svg>
       <div className="mt-2 flex justify-between text-xs tabular-nums text-muted">
-        {daily.map((d, i) => (
-          <span key={i}>{d.label}</span>
+        {axis.map((a, i) => (
+          <span key={i}>{a}</span>
         ))}
       </div>
     </>
@@ -299,8 +326,7 @@ function OutcomeDonut({ metrics, liveCount }: { metrics: ReturnType<typeof compu
             : segs.map((s) => {
                 const share = (s.count / total) * 100
                 const el = (
-                  <circle key={s.status} cx="21" cy="21" r={R} fill="none" stroke={s.color} strokeWidth="4.5"
-                    strokeDasharray={`${share} ${100 - share}`} strokeDashoffset={offset} strokeLinecap="round" />
+                  <circle key={s.status} cx="21" cy="21" r={R} fill="none" stroke={s.color} strokeWidth="4.5" strokeDasharray={`${share} ${100 - share}`} strokeDashoffset={offset} strokeLinecap="round" />
                 )
                 offset -= share
                 return el
@@ -341,14 +367,9 @@ function Pill({ status, label }: { status: string; label: string }) {
     </span>
   )
 }
-function RecentCalls({
-  calls, liveCall, onOpenCall,
-}: {
-  calls: CallOut[]; liveCall?: CallOut; onOpenCall: (id: string) => void
-}) {
-  const rows = liveCall ? [liveCall, ...calls.filter((c) => c.call_id !== liveCall.call_id)].slice(0, 6) : calls
-  if (rows.length === 0) {
-    return <p className="px-5 py-10 text-center text-sm text-muted">No calls yet.</p>
+function RecentCalls({ calls, liveId, onOpenCall }: { calls: CallOut[]; liveId?: string; onOpenCall: (id: string) => void }) {
+  if (calls.length === 0) {
+    return <p className="px-5 py-10 text-center text-sm text-muted">No calls match.</p>
   }
   return (
     <div className="overflow-x-auto">
@@ -364,8 +385,8 @@ function RecentCalls({
           </tr>
         </thead>
         <tbody>
-          {rows.map((c) => {
-            const isLive = liveCall?.call_id === c.call_id
+          {calls.map((c) => {
+            const isLive = liveId === c.call_id
             return (
               <tr key={c.call_id} onClick={() => onOpenCall(c.call_id)} className="cursor-pointer border-t border-border transition-colors hover:bg-foreground/[0.02]">
                 <td className="px-5 py-3">

@@ -25,6 +25,8 @@ export interface EchoAssistAgentProps {
   section?: AgentSection
   /** Section changes the agent initiates itself (e.g. "See all calls" from Overview). */
   onSection?: (section: AgentSection) => void
+  /** Free-text filter from the host search bar, applied to the calls list. */
+  query?: string
 }
 
 /**
@@ -41,6 +43,7 @@ export function EchoAssistAgent({
   renderToaster = true,
   section,
   onSection,
+  query = '',
 }: EchoAssistAgentProps) {
   const resolved = useMemo(() => {
     const next = resolveConfig(config)
@@ -75,11 +78,12 @@ export function EchoAssistAgent({
         {section === 'overview' ? (
           <OverviewPage
             domain={domain}
+            query={query}
             onOpenCall={setSelectedCallId}
             onSeeAllCalls={() => onSection?.('calls')}
           />
         ) : section === 'calls' ? (
-          <CallsTab domain={domain} onOpenCall={setSelectedCallId} />
+          <CallsTab domain={domain} query={query} onOpenCall={setSelectedCallId} />
         ) : section === 'metrics' ? (
           <MetricsPage domain={domain} />
         ) : (

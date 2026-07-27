@@ -24,6 +24,7 @@ function AuthedApp() {
   // deployment's agents (screening, helpdesk, …). The embed itself stays single-domain.
   const [domain, setDomain] = useState('screening')
   const [section, setSection] = useState<AgentSection>('overview')
+  const [query, setQuery] = useState('')
   const config = useMemo<EchoAssistConfig>(
     () => ({
       apiBaseUrl: env.apiBaseUrl,
@@ -38,12 +39,15 @@ function AuthedApp() {
     <HostShell
       section={section}
       onSection={setSection}
+      searchValue={query}
+      onSearch={setQuery}
       domainSlot={<DomainSwitcher value={domain} onChange={setDomain} />}
     >
       <EchoAssistAgent
         config={config}
         section={section}
         onSection={setSection}
+        query={query}
         renderToaster={false}
       />
     </HostShell>
