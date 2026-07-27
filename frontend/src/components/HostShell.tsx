@@ -61,9 +61,10 @@ export function HostShell({
   const initial = (user?.name?.[0] ?? 'M').toUpperCase()
 
   return (
-    <div className="grid min-h-screen grid-cols-1 bg-background text-foreground md:grid-cols-[248px_1fr]">
-      {/* Sidebar — deliberately always dark, for brand consistency across themes. */}
-      <aside className="hidden flex-col gap-7 border-r border-[rgba(99,179,237,0.14)] bg-[#0A0C10] px-4 py-6 text-[#E8EEFF] md:flex">
+    <div className="grid h-screen grid-cols-1 overflow-hidden bg-background text-foreground md:grid-cols-[248px_1fr]">
+      {/* Sidebar — deliberately always dark, for brand consistency across themes. It stays
+          fixed to the viewport (the shell doesn't scroll); only the main content does. */}
+      <aside className="hidden h-screen flex-col gap-7 overflow-y-auto border-r border-[rgba(99,179,237,0.14)] bg-[#0A0C10] px-4 py-6 text-[#E8EEFF] scrollbar-thin md:flex">
         <div className="flex items-center gap-2.5 px-2">
           <span className="grid size-9 place-items-center rounded-xl bg-gradient-to-br from-[#4AF4FF] to-[#7C6BFF] shadow-[0_0_22px_rgba(74,244,255,0.28)]">
             <BrandMark className="size-5" />
@@ -127,9 +128,9 @@ export function HostShell({
         </div>
       </aside>
 
-      {/* Main */}
-      <div className="flex min-w-0 flex-col">
-        <header className="sticky top-0 z-40 flex items-center gap-4 border-b border-border bg-background/80 px-5 py-3.5 backdrop-blur md:px-8">
+      {/* Main — its own column; only <main> scrolls, so the top bar + sidebar stay fixed. */}
+      <div className="flex min-w-0 flex-col overflow-hidden">
+        <header className="z-40 flex shrink-0 items-center gap-4 border-b border-border bg-background/80 px-5 py-3.5 backdrop-blur md:px-8">
           {/* Mobile brand (sidebar is hidden below md) */}
           <div className="flex items-center gap-2 md:hidden">
             <BrandMark className="size-6" />
@@ -159,10 +160,10 @@ export function HostShell({
           </div>
         </header>
 
-        <main className="min-w-0 flex-1">{children}</main>
+        <main className="min-w-0 flex-1 overflow-y-auto scrollbar-thin">{children}</main>
 
         {/* Mobile nav — the sidebar hides below md, so keep the sections reachable. */}
-        <nav className="sticky bottom-0 z-40 flex border-t border-border bg-background/90 backdrop-blur md:hidden">
+        <nav className="z-40 flex shrink-0 border-t border-border bg-background/90 backdrop-blur md:hidden">
           {NAV.map(({ key, label, icon: Icon }) => (
             <button
               key={key}
