@@ -1,6 +1,6 @@
 import { ChevronRight, Radio } from 'lucide-react'
 import { StatusBadge } from '@/components/StatusBadge'
-import { shortId } from '@/lib/format'
+import { formatRelative, titleCase } from '@/lib/format'
 import { useLiveCalls } from '@/lib/query'
 
 /**
@@ -40,7 +40,8 @@ export function LiveCallsBanner({
               className="group flex w-full items-center gap-3 rounded-xl border border-border bg-surface px-4 py-3 text-left transition-colors hover:border-[var(--c-accent-3)]/40"
             >
               <StatusBadge status={call.status} />
-              <span className="font-mono text-xs text-muted">{shortId(call.call_id, 12)}</span>
+              <span className="text-sm font-medium text-foreground">{titleCase(call.domain)} call</span>
+              <span className="text-xs text-muted">· {formatRelative(call.created_at)}</span>
               <span className="ml-auto inline-flex items-center gap-1 text-sm font-medium text-[var(--c-accent-3)]">
                 Open live
                 <ChevronRight className="size-4 transition-transform group-hover:translate-x-0.5" />
