@@ -11,6 +11,7 @@ import type { ReactNode } from 'react'
 import { useAuth } from '@/auth/AuthProvider'
 import type { AgentSection } from '@/embed/types'
 import { cn } from '@/lib/cn'
+import { titleCase } from '@/lib/format'
 import { BrandMark } from './BrandMark'
 import { NotificationBell } from './NotificationBell'
 import { ReadinessIndicator } from './ReadinessIndicator'
@@ -45,6 +46,7 @@ const TITLE: Record<AgentSection, string> = {
 export function HostShell({
   section,
   onSection,
+  domain,
   domainSlot,
   searchValue = '',
   onSearch,
@@ -52,6 +54,8 @@ export function HostShell({
 }: {
   section: AgentSection
   onSection: (section: AgentSection) => void
+  /** The active domain, shown in the top-bar breadcrumb. */
+  domain?: string
   domainSlot?: ReactNode
   searchValue?: string
   onSearch?: (value: string) => void
@@ -137,7 +141,7 @@ export function HostShell({
           </div>
           <h1 className="shrink-0 font-display text-xl font-semibold">
             {TITLE[section]}
-            <span className="ml-1 font-medium text-muted">· Screening</span>
+            {domain ? <span className="ml-1 font-medium text-muted">· {titleCase(domain)}</span> : null}
           </h1>
           <label className="hidden min-w-0 flex-1 items-center gap-2 rounded-xl border border-border bg-foreground/[0.03] px-3.5 py-2 text-muted focus-within:border-accent/40 lg:flex lg:max-w-sm">
             <Search className="size-4 shrink-0" />

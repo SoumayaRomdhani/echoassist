@@ -39,6 +39,7 @@ function AuthedApp() {
     <HostShell
       section={section}
       onSection={setSection}
+      domain={domain}
       searchValue={query}
       onSearch={setQuery}
       domainSlot={<DomainSwitcher value={domain} onChange={setDomain} />}
