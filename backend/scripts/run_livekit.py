@@ -34,12 +34,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+from uuid import uuid4
 
 from config.settings import get_settings
 from src.console import FAIL, bold, dim, init_console
 from src.log import setup_logging
 from src.providers.errors import ProviderConfigError, ProviderError
 from src.runtime import use_selector_event_loop
+from src.telephony.events import NULL_SINK, RedisCallEventSink, build_redis_event_sink
 from src.telephony.live_session import run_live_session
 from src.telephony.livekit_transport import LiveKitTransport, guest_meet_url
 from src.telephony.vad import EndpointConfig
@@ -73,6 +75,11 @@ def _parse_args() -> argparse.Namespace:
         "--audio-debug",
         action="store_true",
         help="Log inbound LiveKit audio frame/RMS diagnostics.",
+    )
+    parser.add_argument(
+        "--broadcast", action="store_true",
+        help="Stream this call to the dashboard live (via Redis). Needs Redis + the API "
+             "server up; the call appears under Calls and in the live banner.",
     )
     return parser.parse_args()
 
@@ -129,10 +136,23 @@ async def main() -> None:
             "Check LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET, and that a caller joined."
         ) from exc
 
+    # --broadcast streams the call to the dashboard; otherwise the sink is a no-op.
+    call_id: str | None = None
+    sink = NULL_SINK
+    if args.broadcast:
+        call_id = uuid4().hex
+        sink = build_redis_event_sink(settings, call_id)
+        print(bold("\nBroadcasting to the dashboard.") + dim(f"  call id={call_id}"))
+        print(dim(f"Open EchoAssist → Calls (domain={settings.domain}): appears live at the top."))
+
     try:
-        await run_live_session(transport, settings, interview=args.interview)
+        await run_live_session(
+            transport, settings, interview=args.interview, sink=sink, call_id=call_id
+        )
     finally:
         await transport.aclose()
+        if isinstance(sink, RedisCallEventSink):
+            await sink.aclose()
 
 
 if __name__ == "__main__":
