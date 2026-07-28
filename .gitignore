@@ -44,3 +44,5 @@ Thumbs.db
 # --- Node (frontend, sprint 7) ---
 node_modules/
 frontend/dist/
+
+backend/lk.exe
