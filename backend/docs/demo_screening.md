@@ -105,8 +105,10 @@ Roll it out in two steps; the agent script is identical for both.
 
 > Needs accounts: **LiveKit** (Cloud or self-host) for step 10.1, **plus Twilio**
 > for step 10.2. Put keys in `backend/.env` (never committed). For an interactive
-> call also set the cloud providers — `STT_PROVIDER=deepgram`, `TTS_PROVIDER=cartesia`
-> (+ their keys) — so turns are sub-second instead of the ~15–30 s CPU story.
+> call **set the cloud providers** — the validated combo is `STT_PROVIDER=deepgram`,
+> `TTS_PROVIDER=deepgram`, `LLM_PROVIDER=gemini` (+ their keys) — so turns are
+> sub-second instead of the ~15–30 s CPU story. (Any STT/TTS behind the provider
+> interface works; Deepgram + Gemini is what §10.2 below was validated against.)
 
 > **First, verify your provider keys without a mic or a call:**
 > `python scripts\smoke_providers.py` round-trips a line of text (TTS → wav → STT)
@@ -132,39 +134,83 @@ Roll it out in two steps; the agent script is identical for both.
    ```powershell
    python scripts\run_livekit.py --interview --lang en
    ```
+   Add **`--broadcast`** to stream the call live to the dashboard (needs Redis + the
+   API server up; it appears under **Calls** and in the live banner — great for a demo).
 5. **Join as the caller:** the script prints a **meet.livekit.io URL** — open it in a
    browser, allow the mic, and you are on the call. WebRTC does echo cancellation, so
    **barge-in works without headphones**. The script flow is identical to §4.
 
-### 10.2 PSTN — route a Twilio number into the room (no code change)
+### 10.2 PSTN — route a Twilio number into the room (VALIDATED, no code change)
 
 A phone caller is just another room participant, so `run_livekit.py` is **unchanged**;
-you wire the carrier once. Using the LiveKit CLI (`lk`, authenticated to your project):
+you wire the carrier once. Below is the exact path validated end-to-end against a
+**Twilio trial number → LiveKit Cloud → the agent** (a real call from a mobile reaching
+the interview). Commands use the LiveKit CLI (`lk`, v2.18, authenticated to your project).
 
-1. **LiveKit SIP inbound trunk** — accept calls for your number:
-   ```bash
-   lk sip inbound create --name echoassist-in --numbers "+1XXXXXXXXXX"
+1. **LiveKit SIP inbound trunk** — accept calls for your number, with a shared secret so
+   only your carrier can hand calls in. Note the returned `SIPTrunkID` (`ST_…`):
+   ```powershell
+   .\lk sip inbound create --name echoassist-in --numbers "+1XXXXXXXXXX" `
+     --auth-user echoassist --auth-pass <SHARED_SECRET>
    ```
-2. **LiveKit dispatch rule** — send every inbound SIP call to the fixed room the agent
-   waits in (so the agent and the caller meet):
-   ```bash
-   lk sip dispatch create --name echoassist-dispatch \
-     --trunks <trunk_id> --room echoassist --type direct
+2. **LiveKit dispatch rule** — send every inbound SIP call on that trunk to the fixed
+   room the agent waits in. In `lk` v2.18 the flag is **`--direct <room>`** (there is no
+   `--room`/`--type direct`). Pass the **real** `ST_…` id from step 1:
+   ```powershell
+   .\lk sip dispatch create --name echoassist-dispatch --trunks ST_XXXXXXXX --direct echoassist
    ```
-3. **Twilio** — buy a number, create an **Elastic SIP Trunk**, and point its
-   **Origination URI** at your LiveKit SIP host (Cloud: `sip:<project>.sip.livekit.cloud`;
-   self-host: your server's SIP URI), then route the number to that trunk. (Twilio
-   `<Dial><Sip>` TwiML to the same URI also works.)
-4. **Run the agent** (`python scripts\run_livekit.py --interview`) so it is in
-   `echoassist`, then **dial the Twilio number** — the disclosure plays, consent is
-   captured, and the screening runs over the phone. The compliance trail (§6) and
-   notes/summary persist exactly as in the local demo.
+   Verify with `.\lk sip dispatch list` — `SipTrunks` must show your `ST_…` and `RoomName`
+   must be `echoassist`.
+3. **Find your LiveKit SIP host** — LiveKit Cloud → **Telephony → SIP** shows a URI like
+   `sip:xxxxxxxx.sip.livekit.cloud`. **Use that exact host** — it is *not* derivable from
+   `LIVEKIT_URL` (the subdomain differs).
+4. **Twilio** — buy a number, then point it at LiveKit. The simplest route that works is a
+   **TwiML Bin** assigned to the number's *A call comes in* webhook. Use the **same**
+   `username`/`password` as the trunk's `--auth-user`/`--auth-pass`:
+   ```xml
+   <?xml version="1.0" encoding="UTF-8"?>
+   <Response>
+     <Dial answerOnBridge="true">
+       <Sip username="echoassist" password="<SHARED_SECRET>">sip:+1XXXXXXXXXX@xxxxxxxx.sip.livekit.cloud</Sip>
+     </Dial>
+   </Response>
+   ```
+   (An Elastic SIP Trunk with its Origination URI set to the same host also works, but the
+   TwiML Bin is fewer moving parts for a demo.)
+5. **Run the agent** so it is waiting in `echoassist`, streaming to the dashboard, with a
+   VAD threshold tuned for phone audio (see gotchas):
+   ```powershell
+   python scripts\run_livekit.py --interview --broadcast --lang en --vad-threshold 0.003
+   ```
+6. **Dial the Twilio number.** The caller joins as `sip_+<number>`, the disclosure plays,
+   consent is captured, and the screening runs over the phone. The compliance trail (§6)
+   and notes/summary persist exactly as in the local demo, and `--broadcast` shows it live
+   under **Calls**.
+
+#### Gotchas (each cost real debugging time — read before you dial)
+
+- **Twilio *trial* plays a "press any key" greeting BEFORE bridging.** On a trial account
+  Twilio intercepts the call, speaks a notice, and waits for a keypress **before** running
+  your `<Dial><Sip>`. If you don't press a key it hangs up — and **LiveKit shows 0 calls**,
+  which looks like a config failure but isn't. Press any digit to proceed. The greeting
+  disappears once the Twilio account is **upgraded** (paid).
+- **Inbound SIP audio is quieter than a local mic.** The default VAD threshold (0.015,
+  tuned for the mic) is too high for phone audio (~0.004 RMS) — the agent then hears only a
+  fragment and consent comes back `ambiguous`. Pass **`--vad-threshold 0.003`** (drop to
+  0.002 if it still misses; raise toward 0.004 if room noise self-triggers). The log line
+  `waiting for speech onset: latest_rms=… threshold=…` tells you exactly where you are.
+- **SIP host ≠ `LIVEKIT_URL` host** — copy it from the dashboard (step 3), don't guess it.
+- **`lk` v2.18 syntax drift** — dispatch uses `--direct <room>` (not `--room --type direct`),
+  and `lk sip inbound update` takes a JSON request, not a positional `ST_…` id (to change a
+  trunk, delete and recreate it).
 
 ### 10.3 Fallback
 
 The §8 backup-recording advice applies to the live phone demo too — pre-record one
 successful PSTN call; if the carrier/network hiccups on the day, play the recording.
 
-> **Status:** Path B code is written and unit-tested (provider/transport seams, token
-> grant, endpointing) but **not yet validated against live LiveKit/Twilio accounts** —
-> the steps above are the validation procedure to run once keys exist.
+> **Status:** Path B is **validated live** — a real mobile call over a Twilio trial number
+> reached LiveKit Cloud, the agent joined room `echoassist`, spoke the disclosure, and the
+> call streamed to the dashboard via `--broadcast` (Deepgram STT/TTS + Gemini). The two
+> tuning items above (Twilio trial keypress, `--vad-threshold` for phone audio) are the
+> only gotchas; the transport/provider seams and endpointing remain unit-tested as before.
