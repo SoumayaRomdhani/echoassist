@@ -264,14 +264,27 @@ async def _greet_and_consent(
     settings: Settings,
     call_id: str,
     sink: CallEventSink = NULL_SINK,
+    *,
+    after_disclosure: Callable[[], None] | None = None,
 ) -> bool:
-    """Disclosure → spoken consent → audit log. Returns True if the call may proceed."""
+    """Disclosure → spoken consent → audit log. Returns True if the call may proceed.
+
+    ``after_disclosure`` (optional) is invoked the instant the disclosure has finished
+    speaking — the hook the caller uses to start loading the RAG models in the background,
+    so that ~30 s load overlaps the consent exchange + greeting instead of delaying the
+    very first thing the caller hears.
+    """
     disclosure_text, audio = await pipeline.speak_disclosure()
     sink.emit("agent_state", {"state": "speaking"})
     # These lines are pre-synthesized (not token-streamed), so show the text BEFORE playback —
     # otherwise the dashboard shows a "preparing…" placeholder while the agent is already talking.
     _emit_transcript(sink, "assistant", disclosure_text)
     await _say(transport, "AGENT (disclosure):", disclosure_text, audio)
+
+    # Disclosure spoken cleanly (no RAG contention) → NOW warm the models in the background:
+    # the load overlaps consent + greeting + the early slot questions, none of which use RAG.
+    if after_disclosure is not None:
+        after_disclosure()
 
     print(dim("\n[listening — the caller answers the consent question, then pauses]"))
     sink.emit("agent_state", {"state": "listening"})
@@ -552,22 +565,24 @@ async def run_live_session(
 
     state: ConversationState | None = None
     store: StateStore | None = None
+    retriever: Retriever | None = None
     rag_warm_task: asyncio.Task[None] | None = None
     filler: _Filler | None = None
     filler_task: asyncio.Task[None] | None = None
     if interview:
         state = ConversationState(call_id=call_id)
+        # Building the dialogue is cheap — the FastEmbed models load LAZILY on first use, not
+        # here. We deliberately DON'T warm them yet: loading the embedder + reranker (~30 s and
+        # GIL-heavy) at this point would starve the event loop and delay the disclosure — the
+        # very first thing the caller must hear. The warm is kicked off by `_begin_background_warm`
+        # the instant the disclosure has been spoken (see `after_disclosure` below), so the load
+        # overlaps consent + greeting + the early slot questions (none touch RAG) and the stack is
+        # hot before the first grounded question. Same models, same answers — only the timing moves.
         dialogue, store, retriever = _build_dialogue(settings, domain, llm, state)
-        # Warm the RAG models in the background now, so the first candidate question
-        # doesn't pay their ~30 s cold load mid-call.
-        rag_warm_task = asyncio.create_task(_warm_retriever(retriever))
-        # Pre-synthesize the perceived-latency filler pool in the background (off the critical
-        # path), so a phrase is ready to cover a slow grounded turn. Domain YAML may override it.
         if settings.filler_enabled:
             phrases = _filler_phrases(domain, settings)
             if phrases:
                 filler = _Filler(tts, phrases, settings.filler_delay_ms)
-                filler_task = asyncio.create_task(filler.prepare())
         pipeline = VoicePipeline(
             build_stt(settings), llm, tts, domain, dialogue=dialogue,
             stream_coalesce=settings.tts_local_smoothing,
@@ -576,12 +591,27 @@ async def run_live_session(
     else:
         pipeline = VoicePipeline(build_stt(settings), llm, tts, domain)
 
+    def _begin_background_warm() -> None:
+        """Start loading the RAG models (+ pre-synthesizing fillers) in the background.
+
+        Called right after the disclosure is spoken, so the ~30 s model load overlaps the
+        consent exchange + greeting rather than delaying the disclosure itself.
+        """
+        nonlocal rag_warm_task, filler_task
+        if retriever is not None:
+            rag_warm_task = asyncio.create_task(_warm_retriever(retriever))
+        if filler is not None:
+            filler_task = asyncio.create_task(filler.prepare())
+
     terminal_status = "completed"
     try:
         # The domain rides along on the first event so the API-side bridge can register
         # this call under the right domain (that's what makes it show in the dashboard list).
         sink.emit("status", {"status": "started", "domain": settings.domain})
-        if not await _greet_and_consent(pipeline, transport, settings, call_id, sink):
+        if not await _greet_and_consent(
+            pipeline, transport, settings, call_id, sink,
+            after_disclosure=_begin_background_warm if interview else None,
+        ):
             terminal_status = "declined"
             return
         if interview:
