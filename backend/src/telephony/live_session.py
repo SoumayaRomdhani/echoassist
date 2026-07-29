@@ -15,10 +15,12 @@ then ``aclose()``); this module owns the pipeline + state it builds here.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from config.settings import (
@@ -44,7 +46,7 @@ from src.console import WARN, bold, dim
 from src.observability import latency
 from src.providers.llm.base import LLMProvider
 from src.providers.tts.base import TTSProvider
-from src.providers.types import AudioChunk
+from src.providers.types import AudioChunk, AudioFormat
 from src.storage.db import init_db, make_sessionmaker
 from src.storage.queries import log_consent
 from src.telephony.events import NULL_SINK, CallEventSink
@@ -258,11 +260,46 @@ async def _record_consent(
         await engine.dispose()
 
 
+async def _disclosure_audio(
+    pipeline: VoicePipeline, settings: Settings, domain: DomainConfig
+) -> tuple[str, AudioChunk]:
+    """Return the disclosure text + audio, from a disk cache when possible.
+
+    The disclosure is a FIXED string, so its TTS output is deterministic for a given voice.
+    The very first synth pays the provider's cold start (SDK import + connect + synth — ~10 s
+    on Deepgram), so we cache the resulting PCM to disk keyed by the disclosure text + TTS
+    provider: every later run plays it instantly instead of hitting the network. Change the
+    voice/provider ⇒ the key changes (stale files are simply ignored; clear
+    ``backend/data/tts_cache/`` to prune). Best-effort: any cache error falls back to a live synth.
+    """
+    text = domain.disclosure
+    key = hashlib.sha1(f"{text}\x00{settings.tts_provider.value}".encode()).hexdigest()[:16]
+    cache_dir = Path(settings.data_dir) / "tts_cache"
+    for hit in sorted(cache_dir.glob(f"disclosure_{key}_*hz.pcm")):
+        try:
+            rate = int(hit.name.rsplit("_", 1)[1].removesuffix("hz.pcm"))
+            audio = AudioChunk(data=hit.read_bytes(), fmt=AudioFormat(sample_rate=rate))
+            log.info("startup: disclosure loaded from cache (skipped cold TTS synth)")
+            return text, audio
+        except (OSError, ValueError) as exc:  # unreadable / malformed name -> synth fresh
+            log.warning("disclosure cache read failed (%s); synthesizing.", exc)
+            break
+
+    _text, audio = await pipeline.speak_disclosure()
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        (cache_dir / f"disclosure_{key}_{audio.fmt.sample_rate}hz.pcm").write_bytes(audio.data)
+    except OSError as exc:  # caching is an optimization, never fatal
+        log.warning("could not cache disclosure audio (%s)", exc)
+    return text, audio
+
+
 async def _greet_and_consent(
     pipeline: VoicePipeline,
     transport: Transport,
     settings: Settings,
     call_id: str,
+    domain: DomainConfig,
     sink: CallEventSink = NULL_SINK,
     *,
     after_disclosure: Callable[[], None] | None = None,
@@ -274,7 +311,9 @@ async def _greet_and_consent(
     so that ~30 s load overlaps the consent exchange + greeting instead of delaying the
     very first thing the caller hears.
     """
-    disclosure_text, audio = await pipeline.speak_disclosure()
+    _t = time.monotonic()
+    disclosure_text, audio = await _disclosure_audio(pipeline, settings, domain)
+    log.info("startup: disclosure audio ready in %.1fs", time.monotonic() - _t)
     sink.emit("agent_state", {"state": "speaking"})
     # These lines are pre-synthesized (not token-streamed), so show the text BEFORE playback —
     # otherwise the dashboard shows a "preparing…" placeholder while the agent is already talking.
@@ -596,40 +635,17 @@ async def run_live_session(
         "interview" if interview else "conversation",
     )
 
+    t0 = time.monotonic()
     domain = load_domain_config(settings.domain, settings.config_dir)
     call_id = call_id or uuid.uuid4().hex
-    llm = build_llm_with_failover(settings)
-    tts = build_tts(settings)   # shared by the pipeline and the filler
 
+    # Teardown handles initialised BEFORE the try so the `finally` is safe even if a build
+    # below raises (the "started" event has fired by then, so the call is already registered).
     state: ConversationState | None = None
     store: StateStore | None = None
+    pipeline: VoicePipeline | None = None
     filler: _Filler | None = None
     filler_task: asyncio.Task[None] | None = None
-    if interview:
-        state = ConversationState(call_id=call_id)
-        # Building the dialogue is cheap — the FastEmbed models load LAZILY on first use, not
-        # here. If `prewarm_rag` already started loading them (LiveKit: during the wait for a
-        # caller), we reuse that warmed `retriever` + `rag_warm_task`. Otherwise (the mic: no
-        # wait window) we DON'T warm here — loading the embedder + reranker (~30 s, GIL-heavy)
-        # now would starve the event loop and delay the disclosure, the first thing the caller
-        # must hear. In that case `_begin_background_warm` kicks the load off the instant the
-        # disclosure is spoken (see `after_disclosure`), so it overlaps consent + greeting + the
-        # early slot questions (none touch RAG). Either way the stack is hot before the first
-        # grounded question — same models, same answers, only the timing moves.
-        dialogue, store, retriever = _build_dialogue(
-            settings, domain, llm, state, retriever=retriever
-        )
-        if settings.filler_enabled:
-            phrases = _filler_phrases(domain, settings)
-            if phrases:
-                filler = _Filler(tts, phrases, settings.filler_delay_ms)
-        pipeline = VoicePipeline(
-            build_stt(settings), llm, tts, domain, dialogue=dialogue,
-            stream_coalesce=settings.tts_local_smoothing,
-            chunk_policy=resolve_chunk_policy(settings, domain),
-        )
-    else:
-        pipeline = VoicePipeline(build_stt(settings), llm, tts, domain)
 
     def _begin_background_warm() -> None:
         """Start loading the RAG models (+ pre-synthesizing fillers) in the background.
@@ -647,11 +663,42 @@ async def run_live_session(
 
     terminal_status = "completed"
     try:
-        # The domain rides along on the first event so the API-side bridge can register
-        # this call under the right domain (that's what makes it show in the dashboard list).
+        # Register the call for the dashboard FIRST — before the multi-second provider/model
+        # build below (Gemini + Qdrant client imports) — so the live banner appears now instead
+        # of after startup. The domain rides along so the API bridge registers the right domain.
         sink.emit("status", {"status": "started", "domain": settings.domain})
+
+        llm = build_llm_with_failover(settings)
+        tts = build_tts(settings)   # shared by the pipeline and the filler
+        if interview:
+            state = ConversationState(call_id=call_id)
+            # Building the dialogue is cheap — the FastEmbed models load LAZILY on first use,
+            # not here. If `prewarm_rag` already started loading them (LiveKit: during the wait
+            # for a caller), we reuse that warmed `retriever` + `rag_warm_task`. Otherwise (the
+            # mic: no wait window) we DON'T warm here — loading the embedder + reranker (~30 s,
+            # GIL-heavy) now would starve the event loop and delay the disclosure. In that case
+            # `_begin_background_warm` kicks the load off the instant the disclosure is spoken
+            # (see `after_disclosure`), so it overlaps consent + greeting + the early slot
+            # questions (none touch RAG). Either way the stack is hot before the first grounded
+            # question — same models, same answers, only the timing moves.
+            dialogue, store, retriever = _build_dialogue(
+                settings, domain, llm, state, retriever=retriever
+            )
+            if settings.filler_enabled:
+                phrases = _filler_phrases(domain, settings)
+                if phrases:
+                    filler = _Filler(tts, phrases, settings.filler_delay_ms)
+            pipeline = VoicePipeline(
+                build_stt(settings), llm, tts, domain, dialogue=dialogue,
+                stream_coalesce=settings.tts_local_smoothing,
+                chunk_policy=resolve_chunk_policy(settings, domain),
+            )
+        else:
+            pipeline = VoicePipeline(build_stt(settings), llm, tts, domain)
+        log.info("startup: providers ready in %.1fs", time.monotonic() - t0)
+
         if not await _greet_and_consent(
-            pipeline, transport, settings, call_id, sink,
+            pipeline, transport, settings, call_id, domain, sink,
             after_disclosure=_begin_background_warm if interview else None,
         ):
             terminal_status = "declined"
@@ -673,6 +720,7 @@ async def run_live_session(
         for task in (rag_warm_task, filler_task):
             if task is not None and not task.done():
                 task.cancel()
-        await pipeline.aclose()
+        if pipeline is not None:
+            await pipeline.aclose()
         if store is not None:
             await store.aclose()
