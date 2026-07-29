@@ -491,6 +491,26 @@ async def _warm_retriever(retriever: Retriever) -> None:
         log.warning("RAG warm failed (%s); models will load on the first question.", exc)
 
 
+def prewarm_rag(
+    settings: Settings, *, interview: bool
+) -> tuple[Retriever | None, asyncio.Task[None] | None]:
+    """Build the retriever and start loading its models in the background NOW.
+
+    Call this *before* a transport whose ``start()`` blocks waiting for a caller (LiveKit /
+    SIP): the ~30 s embedder+reranker load then overlaps the connect + wait-for-caller
+    window, so the RAG stack is already hot the moment the call begins instead of being paid
+    mid-call. Hand both returned values to :func:`run_live_session` — the ``retriever`` so it
+    reuses the warmed instance rather than rebuilding, and the task so the session owns its
+    cleanup. A no-op for a free conversation (``interview=False``), which uses no RAG.
+
+    Must be called from within a running event loop (it schedules an ``asyncio`` task).
+    """
+    if not interview:
+        return None, None
+    retriever = build_retriever(settings)
+    return retriever, asyncio.create_task(_warm_retriever(retriever))
+
+
 def _filler_phrases(domain: DomainConfig, settings: Settings) -> list[str]:
     """The filler pool: a domain YAML ``filler:`` (a string or a list) overrides the default."""
     override = domain.flow.get("filler")
@@ -502,14 +522,23 @@ def _filler_phrases(domain: DomainConfig, settings: Settings) -> list[str]:
 
 
 def _build_dialogue(
-    settings: Settings, domain: DomainConfig, llm: LLMProvider, state: ConversationState
+    settings: Settings,
+    domain: DomainConfig,
+    llm: LLMProvider,
+    state: ConversationState,
+    *,
+    retriever: Retriever | None = None,
 ) -> tuple[DialogueManager, StateStore, Retriever]:
     """Wire the dialogue manager (classifier + grounded responder + Redis state).
 
     Also returns the retriever so the caller can warm its models off the critical path.
+    ``retriever`` may be a pre-built (and possibly already-warming) instance from
+    :func:`prewarm_rag` — reused as-is so its loaded models carry into the call; otherwise
+    a fresh one is built here.
     """
     store = build_state_store(settings)
-    retriever = build_retriever(settings)
+    if retriever is None:
+        retriever = build_retriever(settings)
     dialogue = DialogueManager(
         classifier=LLMTurnClassifier(llm),
         responder=GroundedResponder(
@@ -537,6 +566,8 @@ async def run_live_session(
     interview: bool,
     sink: CallEventSink = NULL_SINK,
     call_id: str | None = None,
+    retriever: Retriever | None = None,
+    rag_warm_task: asyncio.Task[None] | None = None,
 ) -> None:
     """Run one live call on an already-started ``transport``.
 
@@ -548,6 +579,13 @@ async def run_live_session(
     so a plain terminal run broadcasts nothing and its console output is unchanged.
     The caller may pass ``call_id`` so it can address the same call on the sink's
     transport (Redis channel) — otherwise a fresh id is generated here.
+
+    ``retriever`` / ``rag_warm_task`` may come from :func:`prewarm_rag` (called before a
+    transport that waits for a caller, e.g. LiveKit): the warmed retriever is reused and the
+    warm is NOT restarted after the disclosure. When both are ``None`` (e.g. the local mic,
+    which has no wait window), the retriever is built here and warmed the moment the
+    disclosure has been spoken — either way the load never blocks the disclosure. This owns
+    the warm task's teardown regardless of who created it.
     """
     log.info(
         "Providers: STT=%s LLM=%s TTS=%s | domain=%s | mode=%s",
@@ -565,20 +603,22 @@ async def run_live_session(
 
     state: ConversationState | None = None
     store: StateStore | None = None
-    retriever: Retriever | None = None
-    rag_warm_task: asyncio.Task[None] | None = None
     filler: _Filler | None = None
     filler_task: asyncio.Task[None] | None = None
     if interview:
         state = ConversationState(call_id=call_id)
         # Building the dialogue is cheap — the FastEmbed models load LAZILY on first use, not
-        # here. We deliberately DON'T warm them yet: loading the embedder + reranker (~30 s and
-        # GIL-heavy) at this point would starve the event loop and delay the disclosure — the
-        # very first thing the caller must hear. The warm is kicked off by `_begin_background_warm`
-        # the instant the disclosure has been spoken (see `after_disclosure` below), so the load
-        # overlaps consent + greeting + the early slot questions (none touch RAG) and the stack is
-        # hot before the first grounded question. Same models, same answers — only the timing moves.
-        dialogue, store, retriever = _build_dialogue(settings, domain, llm, state)
+        # here. If `prewarm_rag` already started loading them (LiveKit: during the wait for a
+        # caller), we reuse that warmed `retriever` + `rag_warm_task`. Otherwise (the mic: no
+        # wait window) we DON'T warm here — loading the embedder + reranker (~30 s, GIL-heavy)
+        # now would starve the event loop and delay the disclosure, the first thing the caller
+        # must hear. In that case `_begin_background_warm` kicks the load off the instant the
+        # disclosure is spoken (see `after_disclosure`), so it overlaps consent + greeting + the
+        # early slot questions (none touch RAG). Either way the stack is hot before the first
+        # grounded question — same models, same answers, only the timing moves.
+        dialogue, store, retriever = _build_dialogue(
+            settings, domain, llm, state, retriever=retriever
+        )
         if settings.filler_enabled:
             phrases = _filler_phrases(domain, settings)
             if phrases:
@@ -595,10 +635,12 @@ async def run_live_session(
         """Start loading the RAG models (+ pre-synthesizing fillers) in the background.
 
         Called right after the disclosure is spoken, so the ~30 s model load overlaps the
-        consent exchange + greeting rather than delaying the disclosure itself.
+        consent exchange + greeting rather than delaying the disclosure itself. The RAG warm
+        is skipped when ``prewarm_rag`` already started it (``rag_warm_task`` set) — that load
+        is already running from before the caller joined.
         """
         nonlocal rag_warm_task, filler_task
-        if retriever is not None:
+        if retriever is not None and rag_warm_task is None:
             rag_warm_task = asyncio.create_task(_warm_retriever(retriever))
         if filler is not None:
             filler_task = asyncio.create_task(filler.prepare())

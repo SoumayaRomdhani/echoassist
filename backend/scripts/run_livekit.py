@@ -42,7 +42,7 @@ from src.log import setup_logging
 from src.providers.errors import ProviderConfigError, ProviderError
 from src.runtime import use_selector_event_loop
 from src.telephony.events import NULL_SINK, RedisCallEventSink, build_redis_event_sink
-from src.telephony.live_session import run_live_session
+from src.telephony.live_session import prewarm_rag, run_live_session
 from src.telephony.livekit_transport import LiveKitTransport, guest_meet_url
 from src.telephony.vad import EndpointConfig
 
@@ -128,9 +128,16 @@ async def main() -> None:
 
     _print_join_hint(settings)
 
+    # Load the RAG models WHILE we connect + wait for the caller to join, so the first
+    # grounded question is instant instead of paying their ~30 s cold load mid-call. This
+    # is the win the local mic can't get (it has no wait window). No-op unless --interview.
+    retriever, warm_task = prewarm_rag(settings, interview=args.interview)
+
     try:
         await transport.start()  # connect, publish the agent track, wait for the caller
     except Exception as exc:  # noqa: BLE001 — bad creds / no caller joined is a clean exit
+        if warm_task is not None:
+            warm_task.cancel()
         raise SystemExit(
             f"{FAIL} Could not start the LiveKit call ({exc}).\n"
             "Check LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET, and that a caller joined."
@@ -147,7 +154,8 @@ async def main() -> None:
 
     try:
         await run_live_session(
-            transport, settings, interview=args.interview, sink=sink, call_id=call_id
+            transport, settings, interview=args.interview, sink=sink, call_id=call_id,
+            retriever=retriever, rag_warm_task=warm_task,
         )
     finally:
         await transport.aclose()
