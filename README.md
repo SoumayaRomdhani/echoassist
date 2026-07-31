@@ -15,6 +15,8 @@ for planned work.
 
 ![EchoAssist autonomous voice agent architecture](docs/assets/echoassist_architecture.png)
 
+The diagram shows how the voice engine, backend API, dashboard, and provider abstraction layer work together.
+
 ## Design principles
 
 Three decisions shape the whole codebase.
