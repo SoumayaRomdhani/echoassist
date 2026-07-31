@@ -18,8 +18,15 @@ immutable **consent audit trail** (`disclosure_hash`).
   the agent (and for barge-in to work).
 - Backend venv with deps installed.
 - For `--interview`: **Qdrant + Redis + Postgres** up, and the domain **ingested**.
-- `.env`: set **`WHISPER_LANGUAGE=en`** (pins the language so whisper doesn't
-  mis-detect on short clips), and an LLM with quota left (`LLM_PROVIDER`).
+- `.env`: for this **English-only** demo, set **`WHISPER_LANGUAGE=en`** (pins the
+  language so whisper doesn't mis-detect on short clips), and an LLM with quota left
+  (`LLM_PROVIDER`).
+  > **Bilingual EN/FR demo?** Do the opposite: leave `WHISPER_LANGUAGE` unset and omit
+  > `--lang` below so the language isn't pinned, and use multilingual providers
+  > (Deepgram STT `nova-3` + `DEEPGRAM_LANGUAGE=multi`; a French-capable TTS voice —
+  > Deepgram `DEEPGRAM_TTS_MODEL_FR`, Kokoro `KOKORO_VOICE_FR`, or Cartesia with
+  > `CARTESIA_LANGUAGE` unset). The agent opens in English and switches to French the
+  > moment the caller does.
 
 ## 2. Setup (once)
 

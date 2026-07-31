@@ -163,8 +163,14 @@ class Settings(BaseSettings):
     groq_model: str = "llama-3.3-70b-versatile"
 
     # --- TTS: Kokoro ---
-    kokoro_lang_code: str = "a"
-    kokoro_voice: str = "af_heart"
+    # Kokoro is language-aware: it speaks with the default (English) voice below and switches
+    # to the French voice per reply when the text is French, so the offline path mirrors the
+    # caller's language too. A single fixed lang_code can't do this — its voice is one language,
+    # bound at pipeline construction — hence the separate FR pair rather than KOKORO_LANG_CODE=f.
+    kokoro_lang_code: str = "a"           # default/English pipeline (a=American, b=British)
+    kokoro_voice: str = "af_heart"        # default/English voice
+    kokoro_lang_code_fr: str = "f"        # French pipeline (espeak-ng 'fr'); used only on French replies
+    kokoro_voice_fr: str = "ff_siwis"     # Kokoro's French voice
     kokoro_speed: float = 1.0
 
     # --- TTS: Deepgram Aura (paid drop-in, Sprint 8 Path B) ---
@@ -172,7 +178,11 @@ class Settings(BaseSettings):
     # distinct billing line; falls back to DEEPGRAM_API_KEY when unset. The voice is the
     # model; no separate voice id. List at https://developers.deepgram.com/docs/tts-models
     deepgram_tts_api_key: str | None = None
-    deepgram_tts_model: str = "aura-2-thalia-en"   # e.g. aura-2-thalia-en | aura-2-asteria-en
+    deepgram_tts_model: str = "aura-2-thalia-en"   # default/English voice (e.g. aura-2-asteria-en)
+    # French voice, spoken only when a reply is French so the agent mirrors the caller's
+    # language (Aura voices are single-language). Options: aura-2-agathe-fr | aura-2-hector-fr.
+    # Set blank to keep every reply on the English voice.
+    deepgram_tts_model_fr: str = "aura-2-agathe-fr"
     deepgram_tts_sample_rate: int = 24000          # 8000|16000|24000|32000|48000 (linear16)
 
     # --- TTS: Cartesia (paid drop-in, Sprint 8 Path B) ---
@@ -399,6 +409,8 @@ def build_tts(settings: Settings | None = None) -> TTSProvider:
         return KokoroTTS(
             lang_code=settings.kokoro_lang_code,
             voice=settings.kokoro_voice,
+            lang_code_fr=settings.kokoro_lang_code_fr,
+            voice_fr=settings.kokoro_voice_fr,
             speed=settings.kokoro_speed,
         )
     if settings.tts_provider is TTSProviderName.deepgram:
@@ -407,6 +419,7 @@ def build_tts(settings: Settings | None = None) -> TTSProvider:
         return DeepgramTTS(
             api_key=settings.deepgram_tts_api_key or settings.deepgram_api_key,
             model=settings.deepgram_tts_model,
+            model_fr=settings.deepgram_tts_model_fr or None,
             sample_rate=settings.deepgram_tts_sample_rate,
         )
     if settings.tts_provider is TTSProviderName.cartesia:

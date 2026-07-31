@@ -10,6 +10,13 @@ audio with very low time-to-first-audio, the low-latency complement to Deepgram 
 Unlike Cartesia/ElevenLabs, the *voice* is the model (``aura-2-thalia-en`` …), so
 there is no separate voice id to configure.
 
+Language mirroring (FR/EN): an Aura voice speaks ONE language — the language is baked
+into the model name (``…-en`` vs ``…-fr``) and there is no single Aura model that
+auto-switches between English and French. So, like Kokoro, this provider keeps a
+default (English) model and a French model and picks per utterance: it detects whether
+the reply is French and, if so, synthesizes with the French voice; otherwise the
+default. That lets the agent open in English and speak French once the caller does.
+
 We request **raw ``linear16``** (``container="none"``) at the configured sample
 rate, which is exactly our wire format (providers/types.py: PCM16 mono LE), so each
 streamed chunk is wrapped in an :class:`AudioChunk` with no re-encoding. The async
@@ -28,6 +35,7 @@ from typing import TYPE_CHECKING
 
 from src.providers.errors import ProviderConfigError, ProviderError, ProviderQuotaError
 from src.providers.tts.base import TTSProvider, aligned_pcm16
+from src.providers.tts.language import looks_french
 from src.providers.types import AudioChunk, AudioFormat
 
 if TYPE_CHECKING:  # typing only — never import the SDK at module load
@@ -68,6 +76,7 @@ class DeepgramTTS(TTSProvider):
         *,
         api_key: str | None,
         model: str = "aura-2-thalia-en",
+        model_fr: str | None = "aura-2-agathe-fr",
         sample_rate: int = 24000,
     ) -> None:
         if not api_key:
@@ -83,12 +92,19 @@ class DeepgramTTS(TTSProvider):
         from deepgram import AsyncDeepgramClient
 
         self._client: AsyncDeepgramClient = AsyncDeepgramClient(api_key=api_key)
-        self._model = model
+        self._model = model            # default / English voice
+        # French voice, used only when a reply is French. Blank => stay on the default
+        # voice for every reply (French text would then be read by the English voice).
+        self._model_fr = model_fr or model
         self._sample_rate = sample_rate
 
     @property
     def output_format(self) -> AudioFormat:
         return AudioFormat(sample_rate=self._sample_rate)
+
+    def _select_model(self, text: str) -> str:
+        """The Aura model (voice) for ``text`` — the French voice when French, else default."""
+        return self._model_fr if looks_french(text) else self._model
 
     async def synthesize_stream(self, text: str) -> AsyncIterator[AudioChunk]:
         if not text.strip():
@@ -99,7 +115,7 @@ class DeepgramTTS(TTSProvider):
             # can split a 16-bit sample, so re-align before yielding (aligned_pcm16).
             byte_stream = self._client.speak.v1.audio.generate(
                 text=text,
-                model=self._model,
+                model=self._select_model(text),
                 encoding=_ENCODING,
                 sample_rate=self._sample_rate,
                 container=_CONTAINER,
