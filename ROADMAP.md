@@ -1,4 +1,4 @@
-# EchoAssist — Roadmap
+# EchoAssist -- Roadmap
 
 Companion to `ARCHITECTURE.md`. The system is built provider-agnostic and
 domain-config-driven from the start. Development runs on replayed audio; real
@@ -21,13 +21,13 @@ livekit + livekit-agents for telephony.
 `frontend/src/styles/tokens.css`.
 
 Create `backend/.env.example` with the provider and `DOMAIN` variables from
-`ARCHITECTURE.md` §5.
+`ARCHITECTURE.md` section 5.
 
 ## Milestones
 
 **Skeleton and speaking loop.** Scaffold the backend and the three provider
 interfaces (whisper_local, ollama/gemini, kokoro) behind an env-driven factory.
-Replay and telephonize scripts feed a minimal STT → LLM → TTS pipeline that opens
+Replay and telephonize scripts feed a minimal STT -> LLM -> TTS pipeline that opens
 with a spoken AI disclosure. *Done when* a WAV goes in and a spoken reply comes out,
 fully local.
 
@@ -37,7 +37,7 @@ nDCG eval. *Done when* the agent answers a domain question by retrieving and cit
 the correct document.
 
 **Structured interview.** A domain-config state machine (`screening.yaml`) drives
-greeting → disclosure/consent → slot-filling questions → grounded Q&A → close,
+greeting -> disclosure/consent -> slot-filling questions -> grounded Q&A -> close,
 deciding each turn between ask-next and answer-via-RAG, with conversation state in
 Redis. *Done when* a full interview runs end-to-end from replayed audio.
 
@@ -79,7 +79,7 @@ keys and infrastructure.
 
 - Verticals are added as configuration, not code (screening and helpdesk exist;
   hr and credit_transfer are future config files).
-- The frontend stays thin — voice-engine quality comes first.
+- The frontend stays thin -- voice-engine quality comes first.
 - Test audio is synthetic and telephonized; validating on real anonymized calls is
   future work.
 - Ship each milestone's demonstrable slice before moving on.

@@ -1,4 +1,4 @@
-# EchoAssist — Architecture & Tech Stack (build spec)
+# EchoAssist -- Architecture & Tech Stack (build spec)
 
 > Build specification for an AI coding agent. EchoAssist is an **autonomous voice agent** . Build it **provider-agnostic** (STT/LLM/TTS swappable behind interfaces), **open-source by default**, and **multi-domain** (one engine, domains = config). Paid APIs are drop-in alternatives selected by configuration only.
 
@@ -37,26 +37,26 @@ One engine, many domains. Per domain you provide:
 ## 4. System architecture (three tiers)
 
 ```
-TIER 1 — Voice engine (Python, Pipecat)
-  Caller → Transport (SIP/WebRTC | replay harness in dev)
-        → STT [provider] → Conversation state (Redis)
-        → Dialogue manager (interview flow)
-              ├─ RAG tool (hybrid retrieve + rerank) ← Qdrant (per-domain)
-              └─ Notes extractor (structured output)  → Postgres
-        → LLM [provider] → TTS [provider] → Transport → Caller
-  End of call → Summary generator → Postgres
+TIER 1 -- Voice engine (Python, Pipecat)
+  Caller -> Transport (SIP/WebRTC | replay harness in dev)
+        -> STT [provider] -> Conversation state (Redis)
+        -> Dialogue manager (interview flow)
+              |- RAG tool (hybrid retrieve + rerank) <- Qdrant (per-domain)
+              `- Notes extractor (structured output) -> Postgres
+        -> LLM [provider] -> TTS [provider] -> Transport -> Caller
+  End of call -> Summary generator -> Postgres
 
-TIER 2 — Backend API (FastAPI)
+TIER 2 -- Backend API (FastAPI)
   REST: campaigns, domains, calls, notes, summaries, doc upload (triggers RAG ingest)
   WebSocket: live call status / live transcript to the dashboard
   Persistence: Postgres; cache/state: Redis; vectors: Qdrant
 
-TIER 3 — Frontend dashboard (React, inside ACTEEK Marketplace)
-  Agent card → agent detail view: call list, call detail (transcript/notes/summary),
+TIER 3 -- Frontend dashboard (React, inside ACTEEK Marketplace)
+  Agent card -> agent detail view: call list, call detail (transcript/notes/summary),
   metrics, config (upload docs, pick interview flow)
 ```
 
-Offline pipeline (not in hot path): documents → chunk → embed (BGE-M3) → index (Qdrant). Batch script; never embed during a call.
+Offline pipeline (not in hot path): documents -> chunk -> embed (BGE-M3) -> index (Qdrant). Batch script; never embed during a call.
 
 ## 5. Provider abstraction (the heart of the design)
 
@@ -85,14 +85,14 @@ DOMAIN       = screening | hr | helpdesk | credit_transfer   # default: screenin
 ### Voice / AI core
 | Layer | Open-source default | Paid swap | Role |
 |---|---|---|---|
-| Orchestration | Pipecat | — | Voice pipeline, turn-taking, interruption |
-| Transport / telephony | LiveKit (self-host) + SIP (Twilio) | Twilio Media Streams | PSTN ↔ pipeline (delivery step) |
-| STT | faster-whisper (large-v3) | Deepgram Nova-3 | Speech→text, FR/EN |
+| Orchestration | Pipecat | - | Voice pipeline, turn-taking, interruption |
+| Transport / telephony | LiveKit (self-host) + SIP (Twilio) | Twilio Media Streams | PSTN <-> pipeline (delivery step) |
+| STT | faster-whisper (large-v3) | Deepgram Nova-3 | Speech-to-text, FR/EN |
 | LLM | Ollama + Qwen3 / Mistral Small | Gemini / Claude / GPT | Dialogue + tool calling |
 | Embeddings | BGE-M3 (dense+sparse) | Cohere / Voyage | Hybrid retrieval, multilingual |
 | Vector DB | Qdrant | Pinecone | Per-domain chunk search |
 | Reranker | bge-reranker-v2-m3 | Cohere Rerank | Reorder candidates |
-| TTS | Kokoro | Deepgram Aura / Cartesia / ElevenLabs | Text→speech, streaming |
+| TTS | Kokoro | Deepgram Aura / Cartesia / ElevenLabs | Text-to-speech, streaming |
 
 ### Backend
 | Item | Choice |
@@ -113,7 +113,7 @@ DOMAIN       = screening | hr | helpdesk | credit_transfer   # default: screenin
 | Data | TanStack Query (REST) + native WebSocket (live) |
 | Fonts | Space Grotesk (headings/UI), Manrope (body) |
 | Theme | dark-mode first, light optional (toggle) |
-| Auth | integrate ACTEEK SSO — do not rebuild |
+| Auth | integrate ACTEEK SSO -- do not rebuild |
 
 License note: delivery uses Apache-2.0 / MIT components only. Avoid non-commercial models (e.g. XTTS-v2). Qwen3, Mistral, BGE-M3, Qdrant, Kokoro, Pipecat, LiveKit are commercial-safe; verify per component.
 
