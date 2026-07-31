@@ -4,6 +4,8 @@
 
 ## 1. What we are building
 
+![EchoAssist autonomous voice agent architecture](docs/assets/echoassist_architecture.png)
+
 An autonomous voice agent that conducts structured, interview-style phone conversations, grounds its answers in documentation (RAG), captures structured notes, and produces post-call summaries. 
 
 - **Caller surface (no screen):** a real phone number. The agent answers, runs the interview, speaks back. This is the voice engine.

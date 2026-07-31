@@ -11,6 +11,10 @@ API and a React dashboard.
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full design and [`ROADMAP.md`](ROADMAP.md)
 for planned work.
 
+## Architecture diagram
+
+![EchoAssist autonomous voice agent architecture](docs/assets/echoassist_architecture.png)
+
 ## Design principles
 
 Three decisions shape the whole codebase.
