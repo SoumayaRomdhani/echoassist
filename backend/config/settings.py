@@ -33,6 +33,16 @@ _DEFAULT_FILLER_PHRASES = [
     "Let me verify that.",
     "Give me one second to check.",
 ]
+# French equivalents, played when the current turn is French so the filler matches the
+# caller's language (the language-aware TTS renders these in the French voice). Override
+# with FILLER_PHRASES_FR ("a | b | c") or per domain in the YAML (`filler_fr:`).
+_DEFAULT_FILLER_PHRASES_FR = [
+    "Je vérifie ça.",
+    "Un instant, je vérifie.",
+    "Laissez-moi vérifier.",
+    "Je regarde ça tout de suite.",
+    "Un instant, s'il vous plaît.",
+]
 
 # Quiet a noisy multi-line Hugging Face warning on Windows (no symlink support).
 # Set here because settings is imported before any model library loads.
@@ -129,7 +139,8 @@ class Settings(BaseSettings):
     filler_enabled: bool = True
     filler_delay_ms: int = 800
     filler_only_for_rag: bool = True
-    filler_phrases: list[str] = _DEFAULT_FILLER_PHRASES   # rotated for variety
+    filler_phrases: list[str] = _DEFAULT_FILLER_PHRASES        # rotated for variety (English)
+    filler_phrases_fr: list[str] = _DEFAULT_FILLER_PHRASES_FR  # rotated for variety (French turns)
     domain: str = "screening"
 
     # --- STT: faster-whisper ---
@@ -293,7 +304,7 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 512
     log_level: str = "INFO"
 
-    @field_validator("filler_phrases", mode="before")
+    @field_validator("filler_phrases", "filler_phrases_fr", mode="before")
     @classmethod
     def _split_filler_phrases(cls, value: object) -> object:
         # Accept a friendly delimited env string ("a | b ; c") as well as a real list.

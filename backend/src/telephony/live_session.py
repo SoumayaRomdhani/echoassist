@@ -46,6 +46,7 @@ from src.console import WARN, bold, dim
 from src.observability import latency
 from src.providers.llm.base import LLMProvider
 from src.providers.tts.base import TTSProvider
+from src.providers.tts.language import looks_french
 from src.providers.types import AudioChunk, AudioFormat
 from src.storage.db import init_db, make_sessionmaker
 from src.storage.queries import log_consent
@@ -61,39 +62,61 @@ log = logging.getLogger("echoassist.live")
 class _Filler:
     """Short, professional, pre-synthesized acknowledgements for slow grounded turns.
 
-    A small pool is synthesized once in the background at session start (off the critical path)
-    and cached as :class:`AudioChunk`\\ s — never a per-turn TTS call. :meth:`next_chunk` cycles
-    through them for variety. Honest, not human mimicry (no "uhm"/breaths).
+    Two small pools (English + French) are synthesized once in the background at session
+    start (off the critical path) and cached as :class:`AudioChunk`\\ s — never a per-turn
+    TTS call. Because the TTS provider is language-aware, the French phrases are rendered in
+    the French voice, so :meth:`next_chunk` can play a filler in the caller's current language
+    (English by default, French once the caller switches). Each pool cycles for variety.
+    Honest, not human mimicry (no "uhm"/breaths).
     """
 
-    def __init__(self, tts: TTSProvider, phrases: list[str], delay_ms: int) -> None:
+    def __init__(
+        self,
+        tts: TTSProvider,
+        phrases: list[str],
+        delay_ms: int,
+        *,
+        phrases_fr: list[str] | None = None,
+    ) -> None:
         self._tts = tts
-        self._phrases = phrases
+        self._phrases: dict[str, list[str]] = {"en": phrases, "fr": phrases_fr or []}
         self.delay_s = max(0.0, delay_ms / 1000.0)
-        self._chunks: list[AudioChunk] = []
-        self._next = 0
+        self._chunks: dict[str, list[AudioChunk]] = {"en": [], "fr": []}
+        self._next: dict[str, int] = {"en": 0, "fr": 0}
 
     async def prepare(self) -> None:
-        for phrase in self._phrases:
-            try:
-                self._chunks.append(await self._tts.synthesize(phrase))
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 — best-effort; a failed phrase is skipped
-                log.warning("filler prep failed for %r (%s)", phrase, exc)
-        if self._chunks:
-            log.info("fillers ready: %d phrase(s)", len(self._chunks))
+        for lang, phrases in self._phrases.items():
+            for phrase in phrases:
+                try:
+                    self._chunks[lang].append(await self._tts.synthesize(phrase))
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 — best-effort; a failed phrase is skipped
+                    log.warning("filler prep failed for %r (%s)", phrase, exc)
+        if self.ready:
+            log.info(
+                "fillers ready: en=%d fr=%d phrase(s)",
+                len(self._chunks["en"]), len(self._chunks["fr"]),
+            )
         else:
             log.warning("no fillers synthesized; slow RAG turns won't be covered.")
 
     @property
     def ready(self) -> bool:
-        return bool(self._chunks)
+        return any(self._chunks.values())
 
-    def next_chunk(self) -> AudioChunk:
-        """The next filler audio, cycling through the pool so it isn't always the same phrase."""
-        chunk = self._chunks[self._next % len(self._chunks)]
-        self._next += 1
+    def next_chunk(self, *, french: bool = False) -> AudioChunk:
+        """The next filler audio in the requested language, cycling so it isn't always the same.
+
+        Falls back to the other pool if the requested one is empty (e.g. French disabled), so a
+        filler is always available once :attr:`ready`.
+        """
+        lang = "fr" if french else "en"
+        if not self._chunks[lang]:
+            lang = "en" if lang == "fr" else "fr"
+        pool = self._chunks[lang]
+        chunk = pool[self._next[lang] % len(pool)]
+        self._next[lang] += 1
         return chunk
 
 
@@ -425,8 +448,12 @@ async def _run_interview(
                 )
                 sink.emit("agent_state", {"state": "speaking", **_progress(question_index, total)})
                 if use_filler:
+                    # Match the filler to the caller's current language (the agent mirrors it),
+                    # so a slow French turn is covered by a French filler, not an English one.
+                    french_turn = looks_french(transcript)
                     barged = await _play_with_filler(
-                        transport, audio_stream, filler.next_chunk, filler.delay_s
+                        transport, audio_stream,
+                        lambda: filler.next_chunk(french=french_turn), filler.delay_s,
                     )
                 else:
                     barged = await transport.send_stream_interruptible(audio_stream)
@@ -550,14 +577,23 @@ def prewarm_rag(
     return retriever, asyncio.create_task(_warm_retriever(retriever))
 
 
-def _filler_phrases(domain: DomainConfig, settings: Settings) -> list[str]:
-    """The filler pool: a domain YAML ``filler:`` (a string or a list) overrides the default."""
-    override = domain.flow.get("filler")
+def _filler_pool(override: object, default: list[str]) -> list[str]:
+    """Resolve a filler pool: a domain YAML override (string or list) wins over the default."""
     if isinstance(override, str):
         return [override.strip()] if override.strip() else []
     if isinstance(override, list):
         return [str(p).strip() for p in override if str(p).strip()]
-    return list(settings.filler_phrases)
+    return list(default)
+
+
+def _filler_phrases(domain: DomainConfig, settings: Settings) -> list[str]:
+    """The English filler pool: a domain YAML ``filler:`` overrides the default."""
+    return _filler_pool(domain.flow.get("filler"), settings.filler_phrases)
+
+
+def _filler_phrases_fr(domain: DomainConfig, settings: Settings) -> list[str]:
+    """The French filler pool: a domain YAML ``filler_fr:`` overrides the default."""
+    return _filler_pool(domain.flow.get("filler_fr"), settings.filler_phrases_fr)
 
 
 def _build_dialogue(
@@ -687,7 +723,10 @@ async def run_live_session(
             if settings.filler_enabled:
                 phrases = _filler_phrases(domain, settings)
                 if phrases:
-                    filler = _Filler(tts, phrases, settings.filler_delay_ms)
+                    filler = _Filler(
+                        tts, phrases, settings.filler_delay_ms,
+                        phrases_fr=_filler_phrases_fr(domain, settings),
+                    )
             pipeline = VoicePipeline(
                 build_stt(settings), llm, tts, domain, dialogue=dialogue,
                 stream_coalesce=settings.tts_local_smoothing,
