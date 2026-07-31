@@ -55,6 +55,23 @@ left off. Conversation state — transcript, slots, query history — lives in R
 call the agent extracts structured notes, writes a grounded summary, and persists
 everything to Postgres.
 
+### Language mirroring (English default, switch to French)
+
+The agent opens in English (disclosure + greeting) and switches to French the
+moment the caller speaks French, then mirrors the caller's language for the rest
+of the call. Three provider-agnostic pieces cooperate:
+
+- **LLM** — a language policy in each domain's `system_prompt` tells the model to
+  reply in the caller's most recent language and never mix two.
+- **STT** — Deepgram `nova-3` + `DEEPGRAM_LANGUAGE=multi` transcribes FR/EN and
+  follows a mid-call switch (the whisper path stays auto-detect). Config only.
+- **TTS** — a voice speaks one language, so the French-capable voice is picked
+  *per reply* (a small FR/EN detector in `src/providers/tts/language.py`): Deepgram
+  Aura `…-fr`, Kokoro `ff_siwis`, or Cartesia (one voice, language left unset =
+  auto-detect). Fixed English lines stay on the English voice.
+
+See `backend/.env.example` for the exact keys.
+
 ## Technology choices
 
 | Layer | Default (local, open source) | Swappable alternatives |
