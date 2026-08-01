@@ -11,6 +11,19 @@ API and a React dashboard.
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full design and [`ROADMAP.md`](ROADMAP.md)
 for planned work.
 
+## Table of contents
+
+- [Architecture diagram](#architecture-diagram)
+- [Design principles](#design-principles)
+- [How a call works](#how-a-call-works)
+- [Technology choices](#technology-choices)
+- [Quick start](#quick-start----speaking-loop)
+- [Domains](#domains)
+- [Backend API and live updates](#backend-api-and-live-updates)
+- [Running with Docker](#running-with-docker)
+- [Frontend dashboard](#frontend-dashboard)
+- [Current limitations](#current-limitations)
+
 ## Architecture diagram
 
 ![EchoAssist autonomous voice agent architecture](docs/assets/echoassist_architecture.png)
