@@ -69,7 +69,7 @@ The dialogue engine is a state machine driven by the domain's YAML flow. It asks
 ordered questions and fills slots, but each caller turn is first classified: if
 the caller asks their own question mid-interview, the agent answers it from the
 knowledge base (retrieval exposed to the LLM as a tool), then resumes where it
-left off. Conversation state -- transcript, slots, query history -- lives in Redis
+left off. Conversation state -- transcript, slots, query history - lives in Redis
 (with an in-memory backend for tests and no-Redis development). At the end of the
 call the agent extracts structured notes, writes a grounded summary, and persists
 everything to Postgres.
