@@ -7,7 +7,6 @@ import { ApiError } from '@/lib/api'
 import { useCalls } from '@/lib/query'
 import type { CallOut } from '@/lib/types'
 import { CallList } from './CallList'
-import { CallStats } from './CallStats'
 import { LiveCallsBanner } from './LiveCallsBanner'
 import { StartCallDialog } from './StartCallDialog'
 
@@ -87,8 +86,6 @@ export function CallsTab({
         <BackendError error={error} />
       ) : (
         <>
-          <CallStats calls={base} />
-
           <div className="flex flex-wrap items-center gap-1 rounded-xl border border-border bg-surface p-1 shadow-sm sm:w-fit">
             {FILTERS.map((f) => {
               const count = base.filter(f.match).length
