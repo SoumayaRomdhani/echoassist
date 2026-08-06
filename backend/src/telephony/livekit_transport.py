@@ -48,6 +48,13 @@ log = logging.getLogger("echoassist.telephony.livekit")
 
 _CAPTURE_SR = 16000   # inbound: matches WhisperLocalSTT / declared to Deepgram (no resample)
 _PLAYBACK_SR = 48000  # outbound: LiveKit's native rate; agent audio is resampled to it
+# Outbound playout buffer. LiveKit's AudioSource default is 1000 ms, which starves on the
+# real-time SIP/PSTN leg: whenever the single asyncio loop is busy (STT, resample, RAG) it
+# can't refill the 1 s buffer in time, so the phone hears silence *inside* an utterance even
+# though the audio/transcript is complete (the dashboard, which isn't real-time, never shows
+# it). A generous buffer hands each whole utterance to LiveKit's own playout up front, immune
+# to loop stalls. Barge-in is unaffected: clear_queue() flushes it instantly on interruption.
+_PLAYBACK_QUEUE_MS = 30_000
 
 
 def _join_token(api_key: str, api_secret: str, *, identity: str, room: str) -> str:
@@ -211,7 +218,7 @@ class LiveKitTransport(Transport):
         log.info("connected to LiveKit room %r as %r", self._room_name, self._identity)
 
         # Publish the agent's audio track so it can speak into the room.
-        self._source = rtc.AudioSource(_PLAYBACK_SR, 1)
+        self._source = rtc.AudioSource(_PLAYBACK_SR, 1, queue_size_ms=_PLAYBACK_QUEUE_MS)
         track = rtc.LocalAudioTrack.create_audio_track("agent-voice", self._source)
         await self._room.local_participant.publish_track(
             track, rtc.TrackPublishOptions(source=rtc.TrackSource.SOURCE_MICROPHONE)
