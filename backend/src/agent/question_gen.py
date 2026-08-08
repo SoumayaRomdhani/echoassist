@@ -27,6 +27,7 @@ _RECORD_TOOL_NAME = "record_questions"
 
 # Guardrails — bound what we accept back from the model.
 DEFAULT_MAX_QUESTIONS = 8
+MAX_QUESTIONS_LIMIT = 20   # hard cap for a recruiter-curated set (manual edits)
 MAX_QUESTION_LEN = 300
 MAX_SLOT_LEN = 40
 
@@ -77,9 +78,9 @@ def _slugify(text: str) -> str:
 def normalize_questions(raw: list, *, max_questions: int = DEFAULT_MAX_QUESTIONS) -> list[dict]:
     """Coerce raw model output into the JobPosting.questions shape, with guardrails.
 
-    Accepts a list of ``{"text", "slot"?}`` dicts (or bare strings). Drops empties,
-    bounds text length, derives a machine-safe unique ``slot`` per question, assigns
-    stable ``q{n}`` ids, defaults ``enabled`` to True, and clamps the count.
+    Accepts a list of ``{"text", "slot"?, "enabled"?}`` dicts (or bare strings). Drops
+    empties, bounds text length, derives a machine-safe unique ``slot`` per question,
+    assigns stable ``q{n}`` ids, preserves ``enabled`` (default True), and clamps the count.
     """
     questions: list[dict] = []
     used_slots: set[str] = set()
@@ -88,11 +89,11 @@ def normalize_questions(raw: list, *, max_questions: int = DEFAULT_MAX_QUESTIONS
             item = {"text": item}
         elif not isinstance(item, dict):
             continue
-        text = str(item.get("text", "")).strip()[:MAX_QUESTION_LEN]
+        text = str(item.get("text") or "").strip()[:MAX_QUESTION_LEN]
         if not text:
             continue
 
-        slot = _slugify(str(item.get("slot", "")).strip()) or _slugify(text) or "question"
+        slot = _slugify(str(item.get("slot") or "").strip()) or _slugify(text) or "question"
         base, n = slot, 2
         while slot in used_slots:  # keep slot names unique for downstream slot-filling
             slot = f"{base}_{n}"[:MAX_SLOT_LEN]
@@ -103,7 +104,7 @@ def normalize_questions(raw: list, *, max_questions: int = DEFAULT_MAX_QUESTIONS
             "id": f"q{len(questions) + 1}",
             "text": text,
             "slot": slot,
-            "enabled": True,
+            "enabled": bool(item.get("enabled", True)),
         })
         if len(questions) >= max_questions:
             break

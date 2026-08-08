@@ -228,6 +228,7 @@ def make_resources(
     data_dir: Path | None = None,
     indexer=None,
     preflight_error: str | None = None,
+    llm_factory=None,
 ) -> AppResources:
     settings = settings or make_settings()
     sessionmaker = make_sessionmaker(engine)
@@ -255,6 +256,7 @@ def make_resources(
         call_manager=call_manager,
         ingest_service=ingest_service,
         pool=None,
+        llm_factory=llm_factory,
     )
 
 

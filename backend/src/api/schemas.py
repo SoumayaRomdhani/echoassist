@@ -8,10 +8,12 @@ The ``from_orm_*`` constructors do the (small, explicit) mapping.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from src.storage.models import Call, Campaign, ConsentLog
+from src.agent.question_gen import DEFAULT_MAX_QUESTIONS, MAX_QUESTIONS_LIMIT
+from src.storage.models import Call, Campaign, ConsentLog, JobPosting
 
 
 # --- Domains --------------------------------------------------------------- #
@@ -46,6 +48,55 @@ class CampaignOut(BaseModel):
             name=campaign.name,
             domain=campaign.domain,
             created_at=campaign.created_at,
+        )
+
+
+# --- Job postings ---------------------------------------------------------- #
+class QuestionModel(BaseModel):
+    """One interview question. ``id``/``slot`` are server-assigned (optional on input)."""
+
+    id: str | None = None
+    text: str = Field(min_length=1, max_length=300)
+    slot: str | None = None
+    enabled: bool = True
+
+
+class JobPostingCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(min_length=1, description="The job description (fiche de poste).")
+    domain: str = "screening"
+    max_questions: int = Field(default=DEFAULT_MAX_QUESTIONS, ge=1, le=MAX_QUESTIONS_LIMIT)
+
+
+class JobPostingUpdate(BaseModel):
+    """Recruiter edits: any subset. ``questions`` replaces the whole set (re-normalized)."""
+
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    questions: list[QuestionModel] | None = None
+    status: Literal["draft", "confirmed"] | None = None
+
+
+class JobPostingOut(BaseModel):
+    id: int
+    title: str
+    domain: str
+    description: str
+    questions: list[QuestionModel]
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_orm_model(cls, posting: JobPosting) -> JobPostingOut:
+        return cls(
+            id=posting.id,
+            title=posting.title,
+            domain=posting.domain,
+            description=posting.description,
+            questions=[QuestionModel(**q) for q in posting.questions],
+            status=posting.status,
+            created_at=posting.created_at,
+            updated_at=posting.updated_at,
         )
 
 

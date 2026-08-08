@@ -16,6 +16,7 @@ import asyncio
 import importlib.util
 import logging
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -272,6 +273,9 @@ class AppResources:
     ingest_service: IngestService
     pool: ProviderPool | None = None
     live_bridge: LiveCallBridge | None = None
+    # Lazy LLM accessor for non-call endpoints (e.g. question generation). In production
+    # this is ``pool.llm``; tests inject a fake. None means generation is unavailable (503).
+    llm_factory: Callable[[], LLMProvider] | None = None
 
     async def aclose(self) -> None:
         if self.live_bridge is not None:
@@ -338,6 +342,7 @@ def build_resources(settings: Settings | None = None) -> AppResources:
         ingest_service=ingest_service,
         pool=pool,
         live_bridge=_build_live_bridge(settings, hub, call_manager),
+        llm_factory=pool.llm,
     )
 
 

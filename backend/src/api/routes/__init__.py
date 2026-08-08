@@ -5,6 +5,7 @@ from src.api.routes.campaigns import router as campaigns_router
 from src.api.routes.documents import router as documents_router
 from src.api.routes.domains import router as domains_router
 from src.api.routes.health import router as health_router
+from src.api.routes.job_postings import router as job_postings_router
 
 ROUTERS = (
     health_router,
@@ -12,6 +13,7 @@ ROUTERS = (
     campaigns_router,
     calls_router,
     documents_router,
+    job_postings_router,
 )
 
 __all__ = ["ROUTERS"]
