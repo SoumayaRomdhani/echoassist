@@ -6,6 +6,7 @@ pipeline changes (ARCHITECTURE.md §2, §4):
 
     python scripts/run_live.py                 # free conversation (STT -> LLM -> TTS)
     python scripts/run_live.py --interview     # the full structured screening interview
+    python scripts/run_live.py --job-posting-id 3   # tailored interview from a job posting (JD)
     python scripts/run_live.py --lang en       # pin the STT language (avoids mis-detection)
     python scripts/run_live.py --rate 48000    # if your mic rejects 16 kHz
     python scripts/run_live.py --device "USB"  # pick an input device by name/index
@@ -63,6 +64,12 @@ def _parse_args() -> argparse.Namespace:
         help="Run the full structured screening interview (needs Qdrant + Redis + Postgres).",
     )
     parser.add_argument(
+        "--job-posting-id", type=int, default=None,
+        help="Run a tailored interview from this CONFIRMED job posting id (implies --interview): "
+             "the agent asks the questions generated from that job description. Create and "
+             "confirm the posting in the dashboard's Interviews tab first.",
+    )
+    parser.add_argument(
         "--rate", type=int, default=16000,
         help="Microphone capture sample rate (try 48000 if 16000 is rejected).",
     )
@@ -115,9 +122,12 @@ async def main() -> None:
         print(bold("\nBroadcasting to the dashboard.") + dim(f"  call id={call_id}"))
         print(dim("Open EchoAssist → Calls: it appears live at the top (and in the banner)."))
 
+    # A job posting only makes sense for the structured interview, so it implies --interview.
+    interview = args.interview or args.job_posting_id is not None
     try:
         await run_live_session(
-            transport, settings, interview=args.interview, sink=sink, call_id=call_id
+            transport, settings, interview=interview, sink=sink, call_id=call_id,
+            job_posting_id=args.job_posting_id,
         )
     finally:
         await transport.aclose()
@@ -131,5 +141,7 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n" + dim("Hung up."))
+    except ValueError as exc:  # e.g. unknown / unconfirmed job posting id
+        raise SystemExit(f"{FAIL} {exc}") from exc
     except ProviderError as exc:
         raise SystemExit(f"{FAIL} {exc}") from exc

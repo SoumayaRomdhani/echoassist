@@ -35,7 +35,7 @@ from config.settings import (
 from src.agent.consent import disclosure_hash
 from src.agent.conversation import ConversationAgent
 from src.agent.dialogue import DialogueManager, LLMTurnClassifier
-from src.agent.domain import DomainConfig, load_domain_config
+from src.agent.domain import DomainConfig, load_domain_config, with_question_flow
 from src.agent.finalize import finalize_call
 from src.agent.grounding import GroundedResponder
 from src.agent.notes import load_notes_schema
@@ -283,6 +283,34 @@ async def _record_consent(
         await engine.dispose()
 
 
+async def _tailored_domain(
+    settings: Settings, base: DomainConfig, job_posting_id: int
+) -> DomainConfig:
+    """Overlay a confirmed job posting's questions onto the base flow (JD-based interview).
+
+    The same builder the API runner uses (``with_question_flow``): each enabled question
+    becomes a question state, everything else (disclosure, consent, grounded_qa, close) is
+    inherited. Raises ``ValueError`` if the posting is missing or has no enabled questions.
+    """
+    from src.storage.queries import get_job_posting
+
+    engine = build_engine(settings)
+    try:
+        await init_db(engine)
+        async with make_sessionmaker(engine)() as session:
+            posting = await get_job_posting(session, job_posting_id)
+    finally:
+        await engine.dispose()
+    if posting is None:
+        raise ValueError(f"job posting {job_posting_id} not found")
+    domain = with_question_flow(base, posting.questions)
+    log.info(
+        "tailored interview from job posting %d (%d question states)",
+        job_posting_id, _question_total(domain),
+    )
+    return domain
+
+
 async def _disclosure_audio(
     pipeline: VoicePipeline, settings: Settings, domain: DomainConfig
 ) -> tuple[str, AudioChunk]:
@@ -453,7 +481,7 @@ async def _run_interview(
                     french_turn = looks_french(transcript)
                     barged = await _play_with_filler(
                         transport, audio_stream,
-                        lambda: filler.next_chunk(french=french_turn), filler.delay_s,
+                        lambda fr=french_turn: filler.next_chunk(french=fr), filler.delay_s,
                     )
                 else:
                     barged = await transport.send_stream_interruptible(audio_stream)
@@ -641,6 +669,7 @@ async def run_live_session(
     interview: bool,
     sink: CallEventSink = NULL_SINK,
     call_id: str | None = None,
+    job_posting_id: int | None = None,
     retriever: Retriever | None = None,
     rag_warm_task: asyncio.Task[None] | None = None,
 ) -> None:
@@ -673,6 +702,10 @@ async def run_live_session(
 
     t0 = time.monotonic()
     domain = load_domain_config(settings.domain, settings.config_dir)
+    # JD-based interview: overlay the confirmed job posting's questions onto the flow, so
+    # the live mic/LiveKit call asks the tailored questions instead of the static YAML ones.
+    if job_posting_id is not None:
+        domain = await _tailored_domain(settings, domain, job_posting_id)
     call_id = call_id or uuid.uuid4().hex
 
     # Teardown handles initialised BEFORE the try so the `finally` is safe even if a build
