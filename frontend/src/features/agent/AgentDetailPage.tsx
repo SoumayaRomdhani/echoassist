@@ -4,6 +4,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useAgentDomain } from '@/embed/AgentConfigContext'
 import { CallsTab } from '@/features/calls/CallsTab'
 import { DomainConfigPage } from '@/features/config/DomainConfigPage'
+import { JobPostingsTab } from '@/features/jobs/JobPostingsTab'
 import { MetricsPage } from '@/features/metrics/MetricsPage'
 
 export function AgentDetailPage({ onOpenCall }: { onOpenCall: (callId: string) => void }) {
@@ -33,11 +34,15 @@ export function AgentDetailPage({ onOpenCall }: { onOpenCall: (callId: string) =
       <Tabs defaultValue="calls" className="mt-8">
         <TabsList>
           <TabsTrigger value="calls">Calls</TabsTrigger>
+          <TabsTrigger value="interviews">Interviews</TabsTrigger>
           <TabsTrigger value="metrics">Metrics</TabsTrigger>
           <TabsTrigger value="config">Configuration</TabsTrigger>
         </TabsList>
         <TabsContent value="calls">
           <CallsTab domain={domain} onOpenCall={onOpenCall} />
+        </TabsContent>
+        <TabsContent value="interviews">
+          <JobPostingsTab domain={domain} />
         </TabsContent>
         <TabsContent value="metrics">
           <MetricsPage domain={domain} />

@@ -21,7 +21,7 @@ export interface EchoAssistConfig {
 }
 
 /** Top-level workspace sections, driven by the host shell's sidebar. */
-export type AgentSection = 'overview' | 'calls' | 'metrics' | 'config'
+export type AgentSection = 'overview' | 'calls' | 'interviews' | 'metrics' | 'config'
 
 /** Config with defaults applied, provided to components via context. */
 export interface ResolvedConfig {

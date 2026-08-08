@@ -12,6 +12,9 @@ import type {
   DomainOut,
   DomainReindexOut,
   HealthOut,
+  JobPostingCreate,
+  JobPostingOut,
+  JobPostingUpdate,
   SearchPreviewOut,
   StartCallRequest,
   StartCallResponse,
@@ -34,6 +37,8 @@ export const queryKeys = {
   call: (id: string) => ['calls', 'detail', id] as const,
   consent: (id: string) => ['calls', 'detail', id, 'consent'] as const,
   documents: (domain: string) => ['domains', domain, 'documents'] as const,
+  jobPostings: ['jobPostings'] as const,
+  jobPosting: (id: number) => ['jobPostings', id] as const,
 }
 
 function callsQueryString(params: CallsParams): string {
@@ -119,6 +124,46 @@ export function useStartCall() {
     mutationFn: (body: StartCallRequest) => api.postJson<StartCallResponse>('/calls', body),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['calls'] })
+    },
+  })
+}
+
+// --- Job postings (JD-based interviews) ----------------------------------- //
+export function useJobPostings() {
+  return useQuery({
+    queryKey: queryKeys.jobPostings,
+    queryFn: () => api.get<JobPostingOut[]>('/job-postings'),
+  })
+}
+
+export function useJobPosting(id: number | null) {
+  return useQuery({
+    queryKey: queryKeys.jobPosting(id ?? 0),
+    queryFn: () => api.get<JobPostingOut>(`/job-postings/${id}`),
+    enabled: id != null,
+  })
+}
+
+/** Generate a draft posting (questions drafted from the description by the LLM). */
+export function useCreateJobPosting() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: JobPostingCreate) => api.postJson<JobPostingOut>('/job-postings', body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.jobPostings })
+    },
+  })
+}
+
+/** Save recruiter edits (curate questions / confirm the posting). */
+export function useUpdateJobPosting(id: number) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: JobPostingUpdate) =>
+      api.patchJson<JobPostingOut>(`/job-postings/${id}`, body),
+    onSuccess: (posting) => {
+      queryClient.setQueryData(queryKeys.jobPosting(id), posting)
+      void queryClient.invalidateQueries({ queryKey: queryKeys.jobPostings })
     },
   })
 }

@@ -68,10 +68,46 @@ export interface ConsentLogOut {
   created_at: string
 }
 
+export type JobPostingStatus = 'draft' | 'confirmed'
+
+/** One interview question. `id`/`slot` are server-assigned; `enabled` gates it. */
+export interface Question {
+  id: string | null
+  text: string
+  slot: string | null
+  enabled: boolean
+}
+
+export interface JobPostingOut {
+  id: number
+  title: string
+  domain: string
+  description: string
+  questions: Question[]
+  status: JobPostingStatus
+  created_at: string
+  updated_at: string
+}
+
+export interface JobPostingCreate {
+  title: string
+  description: string
+  domain?: string
+  max_questions?: number
+}
+
+/** A partial update: any subset. `questions` replaces the whole set. */
+export interface JobPostingUpdate {
+  title?: string
+  questions?: Question[]
+  status?: JobPostingStatus
+}
+
 export interface StartCallRequest {
   domain?: string
   campaign?: string
   consent: boolean
+  job_posting_id?: number
 }
 
 export interface StartCallResponse {

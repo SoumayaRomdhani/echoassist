@@ -6,6 +6,7 @@ import { AgentDetailPage } from '@/features/agent/AgentDetailPage'
 import { CallDetailPage } from '@/features/calls/CallDetailPage'
 import { CallsTab } from '@/features/calls/CallsTab'
 import { DomainConfigPage } from '@/features/config/DomainConfigPage'
+import { JobPostingsTab } from '@/features/jobs/JobPostingsTab'
 import { MetricsPage } from '@/features/metrics/MetricsPage'
 import { OverviewPage } from '@/features/overview/OverviewPage'
 import { configureRuntime } from '@/lib/runtimeConfig'
@@ -84,6 +85,8 @@ export function EchoAssistAgent({
           />
         ) : section === 'calls' ? (
           <CallsTab domain={domain} query={query} onOpenCall={setSelectedCallId} />
+        ) : section === 'interviews' ? (
+          <JobPostingsTab domain={domain} />
         ) : section === 'metrics' ? (
           <MetricsPage domain={domain} />
         ) : (

@@ -1,5 +1,6 @@
 import {
   BarChart3,
+  ClipboardList,
   LayoutGrid,
   LogOut,
   PanelLeftClose,
@@ -30,17 +31,19 @@ type NavItem = { key: AgentSection; label: string; icon: LucideIcon }
 const NAV: NavItem[] = [
   { key: 'overview', label: 'Overview', icon: LayoutGrid },
   { key: 'calls', label: 'Calls', icon: PhoneCall },
+  { key: 'interviews', label: 'Interviews', icon: ClipboardList },
   { key: 'metrics', label: 'Metrics', icon: BarChart3 },
   { key: 'config', label: 'Configuration', icon: SlidersHorizontal },
 ]
 const GROUPS: { label: string; items: NavItem[] }[] = [
-  { label: 'Workspace', items: NAV.slice(0, 3) },
-  { label: 'Agent', items: NAV.slice(3) },
+  { label: 'Workspace', items: NAV.slice(0, 4) },
+  { label: 'Agent', items: NAV.slice(4) },
 ]
 
 const TITLE: Record<AgentSection, string> = {
   overview: 'Overview',
   calls: 'Calls',
+  interviews: 'Interviews',
   metrics: 'Metrics',
   config: 'Configuration',
 }

@@ -1,12 +1,21 @@
 import { delay, http, HttpResponse } from 'msw'
-import type { DocumentUploadOut, HealthOut, StartCallResponse } from '@/lib/types'
+import type {
+  DocumentUploadOut,
+  HealthOut,
+  Question,
+  StartCallResponse,
+} from '@/lib/types'
 import {
   DEFAULT_CAMPAIGN,
   SCREENING_DOMAIN,
+  createJobPosting,
   db,
   getCall,
+  getJobPosting,
   listCalls,
+  listJobPostings,
   newCallId,
+  updateJobPosting,
 } from './db'
 import { registerLiveCall } from './mockCallStream'
 
@@ -95,6 +104,36 @@ export const handlers = [
       ws_url: `/ws/calls/${callId}`,
     }
     return HttpResponse.json(response, { status: 202 })
+  }),
+
+  // --- Job postings (JD-based interviews) --------------------------------- //
+  http.get('*/job-postings', () => HttpResponse.json(listJobPostings())),
+  http.post('*/job-postings', async ({ request }) => {
+    const body = (await request.json().catch(() => ({}))) as {
+      title?: string
+      description?: string
+      domain?: string
+    }
+    await delay(500) // simulate the LLM drafting questions
+    const posting = createJobPosting({
+      title: body.title ?? 'Untitled role',
+      description: body.description ?? '',
+      domain: body.domain,
+    })
+    return HttpResponse.json(posting, { status: 201 })
+  }),
+  http.get('*/job-postings/:id', ({ params }) => {
+    const posting = getJobPosting(Number(params.id))
+    return posting ? HttpResponse.json(posting) : notFound(`job posting ${params.id} not found`)
+  }),
+  http.patch('*/job-postings/:id', async ({ request, params }) => {
+    const body = (await request.json().catch(() => ({}))) as {
+      title?: string
+      questions?: Question[]
+      status?: 'draft' | 'confirmed'
+    }
+    const posting = updateJobPosting(Number(params.id), body)
+    return posting ? HttpResponse.json(posting) : notFound(`job posting ${params.id} not found`)
   }),
 
   http.post('*/domains/:domain/documents', async ({ request, params }) => {

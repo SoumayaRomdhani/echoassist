@@ -5,6 +5,9 @@ import type {
   CampaignOut,
   ConsentLogOut,
   DomainOut,
+  JobPostingOut,
+  JobPostingStatus,
+  Question,
   TranscriptTurnOut,
 } from '@/lib/types'
 
@@ -221,16 +224,135 @@ const seededCalls: MockCall[] = [
   }),
 ]
 
+// --- Job postings (JD-based interviews) ----------------------------------- //
+const MAX_GENERATED = 8
+const MAX_CURATED = 20
+
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 40)
+    .replace(/_+$/g, '')
+}
+
+/** Mirror the backend's normalize_questions: q{n} ids, unique slugified slots, enabled kept. */
+function normalizeQuestions(
+  raw: { text?: string; slot?: string | null; enabled?: boolean }[],
+  max: number,
+): Question[] {
+  const used = new Set<string>()
+  const out: Question[] = []
+  for (const item of raw) {
+    const text = (item.text ?? '').trim().slice(0, 300)
+    if (!text) continue
+    let slot = slugify(item.slot ?? '') || slugify(text) || 'question'
+    const base = slot
+    let n = 2
+    while (used.has(slot)) slot = `${base}_${n++}`.slice(0, 40)
+    used.add(slot)
+    out.push({ id: `q${out.length + 1}`, text, slot, enabled: item.enabled ?? true })
+    if (out.length >= max) break
+  }
+  return out
+}
+
+/** A stand-in for the LLM: draft plausible screening questions from a description. */
+function generateMockQuestions(description: string): Question[] {
+  const role = description.split(/[.\n]/)[0]?.trim().slice(0, 60) || 'this role'
+  return normalizeQuestions(
+    [
+      { text: `How many years of experience do you have relevant to ${role}?` },
+      { text: 'Walk me through a recent project you are proud of.' },
+      { text: 'Which parts of our tech stack are you strongest in?' },
+      { text: 'How do you approach testing and code quality?' },
+      { text: 'What is your notice period and availability to start?' },
+      { text: 'What are your salary expectations for this role?' },
+    ],
+    MAX_GENERATED,
+  )
+}
+
+const seededJobPostings: JobPostingOut[] = [
+  {
+    id: 1,
+    title: 'Senior Backend Engineer',
+    domain: 'screening',
+    description:
+      'Senior Backend Engineer. We run Python/FastAPI services on Kubernetes at scale, ' +
+      'with PostgreSQL and an on-call rotation. Looking for strong distributed-systems fundamentals.',
+    questions: normalizeQuestions(
+      [
+        { text: 'How many years have you worked with Python and FastAPI?', slot: 'years_python' },
+        { text: 'Describe your experience running services on Kubernetes.', slot: 'k8s_experience' },
+        { text: 'Are you comfortable with a weekly on-call rotation?', slot: 'on_call' },
+        { text: 'What is your notice period?', slot: 'notice_period' },
+        { text: 'What are your salary expectations?', slot: 'salary_expectation' },
+      ],
+      MAX_CURATED,
+    ),
+    status: 'confirmed',
+    created_at: iso(30),
+    updated_at: iso(28),
+  },
+]
+
+let nextJobPostingId = 2
+
 interface MockDb {
   domains: DomainOut[]
   campaigns: CampaignOut[]
   calls: MockCall[]
+  jobPostings: JobPostingOut[]
 }
 
 export const db: MockDb = {
   domains: [SCREENING_DOMAIN],
   campaigns: [DEFAULT_CAMPAIGN],
   calls: seededCalls,
+  jobPostings: seededJobPostings,
+}
+
+export function listJobPostings(): JobPostingOut[] {
+  return [...db.jobPostings].sort((a, b) => b.created_at.localeCompare(a.created_at))
+}
+
+export function getJobPosting(id: number): JobPostingOut | undefined {
+  return db.jobPostings.find((posting) => posting.id === id)
+}
+
+export function createJobPosting(args: {
+  title: string
+  description: string
+  domain?: string
+}): JobPostingOut {
+  const now = new Date().toISOString()
+  const posting: JobPostingOut = {
+    id: nextJobPostingId++,
+    title: args.title,
+    domain: args.domain ?? SCREENING_DOMAIN.name,
+    description: args.description,
+    questions: generateMockQuestions(args.description),
+    status: 'draft',
+    created_at: now,
+    updated_at: now,
+  }
+  db.jobPostings.unshift(posting)
+  return posting
+}
+
+export function updateJobPosting(
+  id: number,
+  patch: { title?: string; questions?: Question[]; status?: JobPostingStatus },
+): JobPostingOut | undefined {
+  const posting = getJobPosting(id)
+  if (!posting) return undefined
+  if (patch.title != null) posting.title = patch.title
+  if (patch.questions != null) posting.questions = normalizeQuestions(patch.questions, MAX_CURATED)
+  if (patch.status != null) posting.status = patch.status
+  posting.updated_at = new Date().toISOString()
+  return posting
 }
 
 function toListItem(call: MockCall): CallOut {
