@@ -395,6 +395,73 @@ class LiveKitTransport(Transport):
             await waiter
         return barged
 
+    async def send_stream_interruptible(self, audio: AsyncIterator[AudioChunk]) -> bool:
+        """Play a *live* (token-streamed) TTS reply gap-free, while watching for barge-in.
+
+        The base implementation plays each chunk then **waits for its playout** before
+        capturing the next — which leaves LiveKit's playout buffer momentarily EMPTY
+        between chunks. On the real-time SIP/PSTN leg that empty window is audible
+        silence, so a streamed reply comes out chopped, even inside a word
+        ("p-r-o-c-e-d…"). Pre-synthesized lines (disclosure/greeting/fillers) are sent
+        as one chunk via :meth:`send_interruptible`, so they never hit this and sound
+        fine — which is exactly the symptom this fixes.
+
+        Here we instead pour every chunk into the buffer **as soon as it arrives**
+        (``_capture`` queues it; we do NOT wait for it to finish), so the buffer plays
+        the chunks back-to-back with no gap. The generous ``_PLAYBACK_QUEUE_MS`` buffer
+        absorbs jitter in the LLM->TTS stream.
+
+        Barge-in still works: on interruption we clear the buffer at once and stop
+        capturing. The stream is always drained to exhaustion so its producer (the
+        dialogue's streaming turn) records the spoken turn even when the caller cuts in.
+        Returns ``True`` if the caller barged in.
+        """
+        if self._source is None or self._queue is None:
+            raise RuntimeError("start() must be called before send_stream_interruptible()")
+        self._drain()
+
+        barged = asyncio.Event()
+        fed = asyncio.Event()       # the whole stream has been consumed
+        finished = asyncio.Event()  # fed AND the buffer has fully played out
+
+        async def _feed() -> None:
+            # Pour chunks into the buffer as they arrive. After a barge-in, keep pulling
+            # from the iterator (without capturing) so the producer finishes bookkeeping.
+            try:
+                async for chunk in audio:
+                    if not barged.is_set():
+                        await self._capture(chunk)
+            finally:
+                fed.set()
+
+        async def _await_done() -> None:
+            assert self._source is not None
+            await fed.wait()
+            if not barged.is_set():
+                await self._source.wait_for_playout()
+            finished.set()
+
+        async def _next_frame() -> np.ndarray | None:
+            assert self._queue is not None
+            try:
+                return self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                await asyncio.sleep(self._cfg.frame_ms / 1000)
+                return None
+
+        feeder = asyncio.create_task(_feed())
+        done_waiter = asyncio.create_task(_await_done())
+        try:
+            if await watch_for_barge_in(
+                _next_frame, lambda: not finished.is_set(), Endpointer(self._barge_cfg)
+            ):
+                barged.set()
+                self._source.clear_queue()
+        finally:
+            await feeder
+            await done_waiter
+        return barged.is_set()
+
     def _drain(self) -> None:
         # Discard frames captured between turns so the next utterance starts clean.
         assert self._queue is not None

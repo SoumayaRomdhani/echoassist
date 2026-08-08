@@ -165,25 +165,9 @@ async def _play_with_filler(
         await producer   # drain the answer fully -> assistant turn recorded + state persisted
 
 
-async def _say(
-    transport: Transport,
-    label: str,
-    text: str,
-    audio: AudioChunk,
-    *,
-    interruptible: bool = True,
-) -> bool:
-    """Speak an agent line. Returns True if the caller barged in.
-
-    ``interruptible=False`` plays the line to the end even if the caller talks over
-    it — used for the compliance disclosure, which must be heard in full before the
-    consent decision is captured (a barge-able disclosure could log consent against a
-    notice the caller never actually heard).
-    """
+async def _say(transport: Transport, label: str, text: str, audio: AudioChunk) -> bool:
+    """Speak an agent line, interruptibly. Returns True if the caller barged in."""
     print(f"\n{bold(label)} {text}")
-    if not interruptible:
-        await transport.send(audio)
-        return False
     barged = await transport.send_interruptible(audio)
     if barged:
         print(dim("  [barge-in — the caller talked over the agent]"))
@@ -357,8 +341,7 @@ async def _greet_and_consent(
     # These lines are pre-synthesized (not token-streamed), so show the text BEFORE playback —
     # otherwise the dashboard shows a "preparing…" placeholder while the agent is already talking.
     _emit_transcript(sink, "assistant", disclosure_text)
-    # Non-interruptible: the compliance disclosure must play in full before consent.
-    await _say(transport, "AGENT (disclosure):", disclosure_text, audio, interruptible=False)
+    await _say(transport, "AGENT (disclosure):", disclosure_text, audio)
 
     # Disclosure spoken cleanly (no RAG contention) → NOW warm the models in the background:
     # the load overlaps consent + greeting + the early slot questions, none of which use RAG.
