@@ -9,7 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from src.agent.state import ConversationState
 from src.storage.db import init_db, make_sessionmaker, persist_call
-from src.storage.models import Call, Campaign, Note, Summary, TranscriptTurn
+from src.storage.models import Call, Campaign, JobPosting, Note, Summary, TranscriptTurn
 
 
 async def _engine():
@@ -52,6 +52,32 @@ async def test_persist_call_writes_all_rows() -> None:
 
         summary = await session.scalar(select(Summary).where(Summary.call_id == call.id))
         assert "six years" in summary.text
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_job_posting_round_trips() -> None:
+    engine = await _engine()  # init_db must auto-create the new job_postings table
+    sessionmaker = make_sessionmaker(engine)
+    questions = [
+        {"id": "q1", "text": "Years of Python experience?", "slot": "years_python",
+         "enabled": True},
+        {"id": "q2", "text": "Comfortable with on-call?", "slot": "on_call", "enabled": False},
+    ]
+    async with sessionmaker() as session:
+        session.add(JobPosting(
+            title="Senior Backend Engineer", description="We are hiring...", questions=questions,
+        ))
+        await session.commit()
+
+    async with sessionmaker() as session:
+        posting = await session.scalar(select(JobPosting))
+        assert posting.title == "Senior Backend Engineer"
+        assert posting.domain == "screening"   # default
+        assert posting.status == "draft"        # default
+        assert posting.questions[0]["slot"] == "years_python"
+        assert posting.questions[1]["enabled"] is False
 
     await engine.dispose()
 

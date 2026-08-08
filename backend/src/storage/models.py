@@ -82,6 +82,30 @@ class Summary(Base):
     call: Mapped[Call] = relationship(back_populates="summary")
 
 
+class JobPosting(Base):
+    """A recruiter-authored job description and the screening questions derived from it.
+
+    The ``description`` (fiche de poste) is fed to the LLM to draft ``questions``;
+    the recruiter then edits/confirms them (``status`` draft -> confirmed) and the
+    confirmed set drives a tailored interview instead of the static ``screening.yaml``
+    flow. Each question is ``{"id", "text", "slot", "enabled"}``; only ``enabled``
+    questions become interview states (see ``states_from_questions``).
+    """
+
+    __tablename__ = "job_postings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    title: Mapped[str] = mapped_column(String(200))
+    domain: Mapped[str] = mapped_column(String(64), default="screening")
+    description: Mapped[str] = mapped_column(Text)  # the raw fiche de poste
+    questions: Mapped[list] = mapped_column(JSON, default=list)  # [{id, text, slot, enabled}]
+    status: Mapped[str] = mapped_column(String(16), default="draft")  # draft | confirmed
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
+
+
 class ConsentLog(Base):
     """Immutable audit trail of consent decisions (ARCHITECTURE.md §10).
 
