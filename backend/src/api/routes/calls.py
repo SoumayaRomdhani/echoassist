@@ -36,6 +36,22 @@ def _live_call_out(session) -> CallOut:
     )
 
 
+async def _validate_job_posting(resources: AppResources, job_posting_id: int) -> None:
+    """Ensure a tailored interview can run: posting exists, confirmed, has ≥1 enabled question."""
+    async with resources.sessionmaker() as db:
+        posting = await queries.get_job_posting(db, job_posting_id)
+    if posting is None:
+        raise HTTPException(status_code=404, detail=f"job posting {job_posting_id} not found")
+    if posting.status != "confirmed":
+        raise HTTPException(
+            status_code=409, detail="job posting must be confirmed before starting a call"
+        )
+    if not any(
+        q.get("enabled", True) and str(q.get("text", "")).strip() for q in posting.questions
+    ):
+        raise HTTPException(status_code=422, detail="job posting has no enabled questions")
+
+
 @router.post("", response_model=StartCallResponse, status_code=202)
 async def start_call(
     body: StartCallRequest, resources: AppResources = Depends(get_resources)
@@ -45,8 +61,11 @@ async def start_call(
         resources.call_manager.preflight()   # voice models present? (light image → 503)
     except VoiceUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if body.job_posting_id is not None:
+        await _validate_job_posting(resources, body.job_posting_id)
     session = resources.call_manager.start(
-        domain=body.domain, campaign=body.campaign, consent=body.consent
+        domain=body.domain, campaign=body.campaign, consent=body.consent,
+        job_posting_id=body.job_posting_id,
     )
     return StartCallResponse(
         call_id=session.call_id, status=session.status, ws_url=f"/ws/calls/{session.call_id}"

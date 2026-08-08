@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -108,3 +111,54 @@ async def test_generation_unavailable_without_llm_is_503(sqlite_engine) -> None:
             "/job-postings", json={"title": "SRE", "description": "K8s."}
         )
     assert resp.status_code == 503
+
+
+# --------------------------------------------------------------------------- #
+# POST /calls with job_posting_id -> tailored interview                       #
+# --------------------------------------------------------------------------- #
+async def _wait_ended(call_manager, call_id: str, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while call_manager.get(call_id).ended_at is None:
+        await asyncio.sleep(0.01)
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"call {call_id} did not finish in {timeout}s")
+
+
+@pytest.mark.asyncio
+async def test_call_runs_the_tailored_interview_from_a_confirmed_posting(sqlite_engine) -> None:
+    resources = make_resources(sqlite_engine, llm_factory=lambda: QuestionsLLM())
+    transport = ASGITransport(app=create_app(resources))
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        created = (await client.post(
+            "/job-postings", json={"title": "SRE", "description": "K8s."}
+        )).json()
+        await client.patch(f"/job-postings/{created['id']}", json={"status": "confirmed"})
+
+        resp = await client.post("/calls", json={"job_posting_id": created["id"], "consent": True})
+        assert resp.status_code == 202
+        call_id = resp.json()["call_id"]
+
+        await _wait_ended(resources.call_manager, call_id)
+        detail = (await client.get(f"/calls/{call_id}")).json()
+
+    await resources.call_manager.aclose()
+
+    # The agent asked the tailored question (from the job posting), not the static YAML one.
+    texts = " ".join(t["text"] for t in detail["transcript"])
+    assert "How many years with Kubernetes?" in texts
+    assert detail["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_call_rejects_unconfirmed_posting(jp_client) -> None:
+    created = (await jp_client.post(
+        "/job-postings", json={"title": "SRE", "description": "K8s."}
+    )).json()
+    resp = await jp_client.post("/calls", json={"job_posting_id": created["id"]})
+    assert resp.status_code == 409   # still a draft
+
+
+@pytest.mark.asyncio
+async def test_call_rejects_unknown_posting(jp_client) -> None:
+    resp = await jp_client.post("/calls", json={"job_posting_id": 999})
+    assert resp.status_code == 404

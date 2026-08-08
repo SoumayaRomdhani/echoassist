@@ -206,6 +206,11 @@ class StartCallRequest(BaseModel):
     consent: bool = Field(
         default=True, description="Whether the simulated caller consents to the recording."
     )
+    job_posting_id: int | None = Field(
+        default=None,
+        description="Run a tailored interview from this confirmed job posting (else the "
+        "static domain flow).",
+    )
 
 
 class StartCallResponse(BaseModel):

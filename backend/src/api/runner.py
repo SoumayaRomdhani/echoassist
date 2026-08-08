@@ -26,7 +26,7 @@ from uuid import uuid4
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from src.agent.consent import ConsentDecision, disclosure_hash
-from src.agent.domain import DomainConfig
+from src.agent.domain import DomainConfig, with_question_flow
 from src.agent.finalize import FinalizedCall
 from src.agent.grounding import Citation
 from src.agent.orchestrator import VoicePipeline
@@ -100,6 +100,7 @@ class CallSession:
     campaign: str
     status: str = "started"          # started|interviewing|completed|declined|failed
     consent_granted: bool = False
+    job_posting_id: int | None = None  # set => tailored interview from a job posting
     started_at: datetime = field(default_factory=_now)
     ended_at: datetime | None = None
     error: str | None = None
@@ -201,12 +202,13 @@ class CallManager:
 
     # --- lifecycle ---------------------------------------------------------
     def start(self, *, domain: str | None = None, campaign: str | None = None,
-              consent: bool = True) -> CallSession:
+              consent: bool = True, job_posting_id: int | None = None) -> CallSession:
         """Register a call and launch its background task; returns immediately."""
         session = CallSession(
             call_id=uuid4().hex,
             domain=domain or self._engine.default_domain(),
             campaign=campaign or self._default_campaign,
+            job_posting_id=job_posting_id,
         )
         self._sessions[session.call_id] = session
         task = asyncio.create_task(self._run(session, consent=consent))
@@ -234,6 +236,13 @@ class CallManager:
             self._fail(session, f"unknown domain '{session.domain}': {exc}")
             return
 
+        if session.job_posting_id is not None:
+            try:
+                domain_cfg = await self._tailored_domain(domain_cfg, session.job_posting_id)
+            except (LookupError, ValueError) as exc:
+                self._fail(session, f"cannot build tailored interview: {exc}")
+                return
+
         state = ConversationState(call_id=call_id)
         # Build off the event loop: a real engine loads heavy models here (FastEmbed
         # retriever, Whisper, Kokoro), which must never block the API while a call starts.
@@ -243,7 +252,7 @@ class CallManager:
 
         try:
             with span("call.run", call_id=call_id, domain=session.domain):
-                await self._drive(session, pipeline, state, consent=consent)
+                await self._drive(session, pipeline, state, domain_cfg, consent=consent)
         except ProviderError as exc:
             log.warning("call %s failed: provider error: %s", call_id, exc)
             await self._persist_terminal(session, state, status="failed",
@@ -255,9 +264,19 @@ class CallManager:
         finally:
             await pipeline.aclose()
 
+    async def _tailored_domain(self, base: DomainConfig, job_posting_id: int) -> DomainConfig:
+        """Overlay a job posting's confirmed questions onto the base domain flow."""
+        from src.storage.queries import get_job_posting
+
+        async with self._sessionmaker() as db:
+            posting = await get_job_posting(db, job_posting_id)
+        if posting is None:
+            raise LookupError(f"job posting {job_posting_id} not found")
+        return with_question_flow(base, posting.questions)
+
     async def _drive(
         self, session: CallSession, pipeline: VoicePipeline, state: ConversationState,
-        *, consent: bool,
+        domain_cfg: DomainConfig, *, consent: bool,
     ) -> None:
         call_id = session.call_id
         self._hub.publish(call_id, "status", {"status": "started"})
@@ -292,7 +311,7 @@ class CallManager:
         question, _ = await pipeline.begin_interview()
         self._emit_transcript(call_id, "assistant", question)
 
-        for audio in self._engine.answer_audios(self._engine.load_domain(session.domain)):
+        for audio in self._engine.answer_audios(domain_cfg):
             with span("call.turn"):
                 turn = await pipeline.interview_turn(audio)
             self._emit_transcript(call_id, "caller", turn.transcript)

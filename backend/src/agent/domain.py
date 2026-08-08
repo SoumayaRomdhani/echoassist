@@ -8,7 +8,7 @@ the Sprint 3 state machine.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import yaml
@@ -55,6 +55,42 @@ def list_available_domains(config_dir: Path) -> list[str]:
     if not flows_dir.exists():
         return []
     return sorted(path.stem for path in flows_dir.glob("*.yaml"))
+
+
+def states_from_questions(questions: list[dict], base: DomainConfig) -> list[dict]:
+    """Build interview ``states`` from confirmed job-posting questions.
+
+    Each enabled question becomes a ``type: question`` state (id / slot / prompt);
+    the base domain's non-question states — the ``grounded_qa`` invite and the
+    ``close`` line — are appended so a tailored interview still invites the
+    candidate's own questions and closes exactly like the static flow.
+    """
+    question_states = [
+        {
+            "id": q["id"],
+            "type": "question",
+            "slot": q.get("slot") or q["id"],
+            "prompt": str(q["text"]).strip(),
+        }
+        for q in questions
+        if q.get("enabled", True) and str(q.get("text", "")).strip()
+    ]
+    tail = [s for s in base.flow.get("states", []) if s.get("type") != "question"]
+    return question_states + tail
+
+
+def with_question_flow(base: DomainConfig, questions: list[dict]) -> DomainConfig:
+    """Return a copy of ``base`` whose interview questions come from ``questions``.
+
+    Everything else (disclosure, greeting, consent wording, system prompt,
+    grounded_qa/close, acknowledgements) is inherited from ``base``. Raises
+    ``ValueError`` when no question is enabled — a tailored interview needs at
+    least one question to open with.
+    """
+    states = states_from_questions(questions, base)
+    if not any(s["type"] == "question" for s in states):
+        raise ValueError("no enabled questions to build a tailored interview")
+    return replace(base, flow={**base.flow, "states": states})
 
 
 def load_domain_config(domain: str, config_dir: Path) -> DomainConfig:
