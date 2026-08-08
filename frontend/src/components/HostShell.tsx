@@ -12,7 +12,7 @@ import {
 } from 'lucide-react'
 import { type ReactNode, useEffect, useState } from 'react'
 import { useAuth } from '@/auth/AuthProvider'
-import type { AgentSection } from '@/embed/types'
+import { type AgentSection, supportsInterviews } from '@/embed/types'
 import { cn } from '@/lib/cn'
 import { titleCase } from '@/lib/format'
 import { BrandMark } from './BrandMark'
@@ -68,6 +68,11 @@ export function HostShell({
 }) {
   const { user, signOut } = useAuth()
   const initial = (user?.name?.[0] ?? 'M').toUpperCase()
+
+  // The Interviews section is screening-only; drop it from the nav on other domains.
+  const showInterviews = supportsInterviews(domain ?? '')
+  const visible = (items: NavItem[]) =>
+    items.filter((item) => item.key !== 'interviews' || showInterviews)
 
   // SaaS-style collapse: narrows the sidebar to an icon rail; persisted so it
   // survives a refresh. Applies at md+ only (below md the sidebar is hidden and
@@ -143,7 +148,7 @@ export function HostShell({
                   {group.label}
                 </p>
               )}
-              {group.items.map(({ key, label, icon: Icon }) => {
+              {visible(group.items).map(({ key, label, icon: Icon }) => {
                 const active = section === key
                 return (
                   <button
@@ -237,7 +242,7 @@ export function HostShell({
 
         {/* Mobile nav — the sidebar hides below md, so keep the sections reachable. */}
         <nav className="z-40 flex shrink-0 border-t border-border bg-background/90 backdrop-blur md:hidden">
-          {NAV.map(({ key, label, icon: Icon }) => (
+          {visible(NAV).map(({ key, label, icon: Icon }) => (
             <button
               key={key}
               type="button"

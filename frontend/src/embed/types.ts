@@ -23,6 +23,15 @@ export interface EchoAssistConfig {
 /** Top-level workspace sections, driven by the host shell's sidebar. */
 export type AgentSection = 'overview' | 'calls' | 'interviews' | 'metrics' | 'config'
 
+/**
+ * Whether the JD-based "Interviews" section applies to a domain. It only makes
+ * sense for the recruitment vertical (screening) — a helpdesk domain has no job
+ * postings — so the nav item and section are hidden elsewhere.
+ */
+export function supportsInterviews(domain: string): boolean {
+  return domain === 'screening'
+}
+
 /** Config with defaults applied, provided to components via context. */
 export interface ResolvedConfig {
   apiBaseUrl: string

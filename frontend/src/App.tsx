@@ -1,8 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from './auth/AuthProvider'
 import { DomainSwitcher } from './components/DomainSwitcher'
 import { HostShell } from './components/HostShell'
-import { EchoAssistAgent } from './embed'
+import { EchoAssistAgent, supportsInterviews } from './embed'
 import type { AgentSection, EchoAssistConfig } from './embed'
 import { LoginPage } from './features/auth/LoginPage'
 import { env } from './lib/env'
@@ -25,6 +25,11 @@ function AuthedApp() {
   const [domain, setDomain] = useState('screening')
   const [section, setSection] = useState<AgentSection>('overview')
   const [query, setQuery] = useState('')
+
+  // Interviews is screening-only: if the domain switches away while it's active, fall back.
+  useEffect(() => {
+    if (section === 'interviews' && !supportsInterviews(domain)) setSection('overview')
+  }, [domain, section])
   const config = useMemo<EchoAssistConfig>(
     () => ({
       apiBaseUrl: env.apiBaseUrl,

@@ -12,7 +12,12 @@ import { OverviewPage } from '@/features/overview/OverviewPage'
 import { configureRuntime } from '@/lib/runtimeConfig'
 import '@/styles/index.css'
 import { AgentConfigProvider } from './AgentConfigContext'
-import { resolveConfig, type AgentSection, type EchoAssistConfig } from './types'
+import {
+  resolveConfig,
+  supportsInterviews,
+  type AgentSection,
+  type EchoAssistConfig,
+} from './types'
 
 export interface EchoAssistAgentProps {
   config: EchoAssistConfig
@@ -69,25 +74,28 @@ export function EchoAssistAgent({
   useEffect(() => setSelectedCallId(null), [section])
 
   const domain = resolved.domain
+  // Interviews is screening-only; if a host requests it elsewhere, show Overview.
+  const effective =
+    section === 'interviews' && !supportsInterviews(domain) ? 'overview' : section
 
   let body
   if (selectedCallId) {
     body = <CallDetailPage callId={selectedCallId} onBack={() => setSelectedCallId(null)} />
-  } else if (section) {
+  } else if (effective) {
     body = (
       <div className="mx-auto max-w-7xl px-6 py-8 md:px-8">
-        {section === 'overview' ? (
+        {effective === 'overview' ? (
           <OverviewPage
             domain={domain}
             query={query}
             onOpenCall={setSelectedCallId}
             onSeeAllCalls={() => onSection?.('calls')}
           />
-        ) : section === 'calls' ? (
+        ) : effective === 'calls' ? (
           <CallsTab domain={domain} query={query} onOpenCall={setSelectedCallId} />
-        ) : section === 'interviews' ? (
+        ) : effective === 'interviews' ? (
           <JobPostingsTab domain={domain} />
-        ) : section === 'metrics' ? (
+        ) : effective === 'metrics' ? (
           <MetricsPage domain={domain} />
         ) : (
           <DomainConfigPage defaultDomain={domain} />
