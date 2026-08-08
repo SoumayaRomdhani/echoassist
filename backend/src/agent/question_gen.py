@@ -44,30 +44,37 @@ _SYSTEM = (
 _JSON_FALLBACK_SYSTEM = (
     "You are helping a recruiter build a phone-screening interview. From the job "
     "description, produce short spoken screening questions in the SAME language as the "
-    'description. Return ONLY a JSON object {"questions": [{"text": ...}]} — no markdown, '
-    "no prose."
+    'description. Return ONLY a JSON object {"questions": ["question one", "question two"]} '
+    "— no markdown, no prose."
 )
 
+# A flat array of strings, deliberately: Gemini's function calling mangles an
+# array-of-objects (it flattens {questions:[{text,slot}]} into a single {text,slot}
+# call), so we ask only for the question text and derive the slot ourselves.
 _QUESTIONS_SCHEMA = {
     "type": "object",
     "properties": {
         "questions": {
             "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string", "description": "The question to ask, spoken."},
-                    "slot": {
-                        "type": "string",
-                        "description": "Short snake_case name for the answer, e.g. years_python.",
-                    },
-                },
-                "required": ["text"],
-            },
+            "items": {"type": "string", "description": "One screening question to ask, spoken."},
         },
     },
     "required": ["questions"],
 }
+
+
+def _questions_from_tool_calls(tool_calls: list) -> list:
+    """Pull the question list out of a tool call, tolerating provider quirks.
+
+    The normal shape is one call with ``{"questions": [...]}``. Gemini sometimes
+    flattens an array into one call per question (each ``{"text": ...}`` or a bare
+    value with no ``questions`` key), so fall back to collecting every call.
+    """
+    first = dict(tool_calls[0].arguments)
+    inner = first.get("questions")
+    if isinstance(inner, list):
+        return inner
+    return [dict(tc.arguments) for tc in tool_calls]
 
 
 def _slugify(text: str) -> str:
@@ -139,11 +146,10 @@ class QuestionGenerator:
             )
 
         if response.tool_calls:
-            payload = dict(response.tool_calls[0].arguments)
+            raw = _questions_from_tool_calls(response.tool_calls)
         else:  # model answered with text instead of calling the tool
-            payload = extract_json(response.text) or {}
+            raw = (extract_json(response.text) or {}).get("questions", [])
 
-        raw = payload.get("questions", [])
         if not isinstance(raw, list):
             raw = []
         questions = normalize_questions(raw, max_questions=max_questions)

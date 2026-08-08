@@ -86,6 +86,32 @@ async def test_generate_via_tool_call() -> None:
     assert all(q["enabled"] for q in out)
 
 
+class FlattenedToolCallsLLM(LLMProvider):
+    """Reproduces Gemini flattening an array into one tool call per question."""
+
+    async def chat(self, messages, tools=None) -> LLMResponse:
+        calls = [
+            ToolCall("c1", "record_questions", {"text": "Years with Python?", "slot": "years_py"}),
+            ToolCall("c2", "record_questions", {"text": "Comfortable with on-call?"}),
+        ]
+        return LLMResponse(text="", tool_calls=calls)
+
+
+@pytest.mark.asyncio
+async def test_generate_handles_flattened_tool_calls() -> None:
+    # No "questions" key + one call per item — must still yield both questions, not [].
+    out = await QuestionGenerator(FlattenedToolCallsLLM()).generate("Backend role")
+    assert [q["slot"] for q in out] == ["years_py", "comfortable_with_on_call"]
+
+
+@pytest.mark.asyncio
+async def test_generate_accepts_array_of_strings() -> None:
+    llm = ToolCallLLM({"questions": ["Years with Go?", "Notice period?"]})
+    out = await QuestionGenerator(llm).generate("Go role")
+    assert [q["text"] for q in out] == ["Years with Go?", "Notice period?"]
+    assert [q["slot"] for q in out] == ["years_with_go", "notice_period"]
+
+
 @pytest.mark.asyncio
 async def test_generate_via_text_json_when_no_tool_call() -> None:
     payload = '{"questions": [{"text": "Notice period?", "slot": "notice"}]}'

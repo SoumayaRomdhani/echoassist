@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from src.agent.grounding import SEARCH_TOOL, GroundedResponder
+from src.providers.errors import ProviderError
 from src.providers.llm.base import LLMProvider
 from src.providers.types import LLMResponse, ToolCall
 from src.rag.types import Chunk, ScoredChunk
@@ -74,6 +75,62 @@ async def test_direct_answer_without_tool_call() -> None:
 def _grounded_llm(answer_text: str, query: str) -> ScriptedLLM:
     call = ToolCall("c1", "search_knowledge_base", {"query": query})
     return ScriptedLLM([LLMResponse(text="", tool_calls=[call]), LLMResponse(text=answer_text)])
+
+
+class ToolFailsLLM(LLMProvider):
+    """Fails when function calling is offered (like Groq `tool_use_failed`), answers otherwise."""
+
+    def __init__(self, answer_text: str) -> None:
+        self._answer_text = answer_text
+        self.tools_offered: list[bool] = []
+
+    async def chat(self, messages, tools=None) -> LLMResponse:
+        self.tools_offered.append(tools is not None)
+        if tools is not None:
+            raise ProviderError("tool_use_failed")
+        return LLMResponse(text=self._answer_text)
+
+    async def chat_stream(self, messages, tools=None):
+        if tools is not None:
+            raise ProviderError("tool_use_failed")
+        yield self._answer_text
+
+
+@pytest.mark.asyncio
+async def test_answer_falls_back_to_retrieve_then_read_when_tool_calling_fails() -> None:
+    # The live failure: Groq returns tool_use_failed on the in-call RAG search tool.
+    chunk = ScoredChunk(Chunk("faq.md#0", "faq.md", "It is fully remote.", 0), 2.0)
+    retriever = FakeRetriever([chunk])
+    llm = ToolFailsLLM("Yes, the role is fully remote [faq.md].")
+
+    answer = await _responder(llm, retriever).answer("Is this role remote?")
+
+    assert llm.tools_offered[0] is True                    # tried tool calling first
+    assert retriever.queries == ["Is this role remote?"]   # fell back: retrieved on the question
+    assert answer.citations == ["faq.md"]                  # still grounded
+    assert answer.text == "Yes, the role is fully remote."
+
+
+@pytest.mark.asyncio
+async def test_answer_fallback_still_refuses_when_nothing_confident() -> None:
+    llm = ToolFailsLLM("Made-up answer.")
+    answer = await _responder(llm, FakeRetriever([])).answer("Is this role remote?")
+
+    assert answer.tool_calls == 0 and answer.citations == []
+    assert "made-up" not in answer.text.lower()            # deterministic refusal, not invention
+    assert "one more detail" in answer.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_answer_streaming_falls_back_when_tool_calling_fails() -> None:
+    chunk = ScoredChunk(Chunk("faq.md#0", "faq.md", "It is fully remote.", 0), 2.0)
+    llm = ToolFailsLLM("Yes, fully remote [faq.md].")
+
+    deltas = [
+        d async for d in _responder(llm, FakeRetriever([chunk])).answer_streaming("Remote?")
+    ]
+
+    assert "".join(deltas) == "Yes, fully remote [faq.md]."
 
 
 @pytest.mark.asyncio

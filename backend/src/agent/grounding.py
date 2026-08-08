@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 from src.agent.guardrails import is_grounded, refusal_message
 from src.observability import latency
+from src.providers.errors import ProviderError
 from src.providers.llm.base import LLMProvider
 from src.providers.types import Message, Role, ToolSpec
 from src.rag.retriever import Retriever
@@ -226,21 +227,38 @@ class GroundedResponder:
         )
         return [Message(Role.SYSTEM, self._system_prompt), Message(Role.USER, user)]
 
+    async def _grounded_read(self, question: str, query: str) -> GroundedAnswer:
+        """Retrieve on ``query``, then read the passages (no tool calling).
+
+        Used for caller-led flows (a clean search query is supplied) and as the
+        fallback when the model can't do function calling — grounding (retrieve +
+        confidence gate) is preserved either way.
+        """
+        confident, n_retrieved = await self._retrieve_confident(query)
+        latency.observe(retrieved_chunks_count=n_retrieved, confident_chunks_count=len(confident))
+        if not confident:
+            return GroundedAnswer(text=self._fallback_message, citations=[], tool_calls=0)
+        with latency.span("llm_total_ms"):
+            response = await self._llm.chat(self._read_messages(question, confident))
+        return self._finalize(response.text, confident, tool_calls=0)
+
     async def answer(self, question: str, *, search_query: str | None = None) -> GroundedAnswer:
         # Retrieve-then-read: when the caller supplies a clean search query (caller-led flows),
         # retrieve first and let the model read the passages — it never skips retrieval, so a
         # grounded answer is not silently replaced by the deterministic fallback.
         if search_query:
-            confident, n_retrieved = await self._retrieve_confident(search_query)
-            latency.observe(
-                retrieved_chunks_count=n_retrieved, confident_chunks_count=len(confident)
-            )
-            if not confident:
-                return GroundedAnswer(text=self._fallback_message, citations=[], tool_calls=0)
-            with latency.span("llm_total_ms"):
-                response = await self._llm.chat(self._read_messages(question, confident))
-            return self._finalize(response.text, confident, tool_calls=0)
+            return await self._grounded_read(question, search_query)
+        try:
+            return await self._answer_via_tools(question)
+        except ProviderError as exc:
+            # Some models fail hard on function calling (e.g. Groq `tool_use_failed`).
+            # Degrade to a deterministic retrieve-then-read on the raw question instead of
+            # failing the whole call; grounding is preserved.
+            log.warning("grounded tool calling failed (%s); retrieve-then-read fallback", exc)
+            return await self._grounded_read(question, question)
 
+    async def _answer_via_tools(self, question: str) -> GroundedAnswer:
+        """Model-driven retrieval: give it the search tool and let it decide when to search."""
         messages = [Message(Role.SYSTEM, self._system_prompt), Message(Role.USER, question)]
         retrieved: list[ScoredChunk] = []
         tool_calls = 0
@@ -284,6 +302,21 @@ class GroundedResponder:
         latency.observe(retrieved_chunks_count=n_retrieved, confident_chunks_count=len(retrieved))
         return self._finalize(final.text, retrieved, tool_calls)
 
+    async def _grounded_read_streaming(self, question: str, query: str):
+        """Streaming counterpart of :meth:`_grounded_read`."""
+        confident, n = await self._retrieve_confident(query)
+        latency.observe(retrieved_chunks_count=n, confident_chunks_count=len(confident))
+        if not confident:
+            yield self._fallback_message
+            return
+        answer_start = time.perf_counter()
+        first = True
+        async for delta in self._llm.chat_stream(self._read_messages(question, confident)):
+            if first:
+                latency.observe(llm_ttft_ms=(time.perf_counter() - answer_start) * 1000.0)
+                first = False
+            yield delta
+
     async def answer_streaming(self, question: str, *, search_query: str | None = None):
         """Stream the grounded answer as raw text deltas (with ``[source]`` markers).
 
@@ -293,20 +326,25 @@ class GroundedResponder:
         """
         # Retrieve-then-read fast path (caller-led flows): ground on the clean query first.
         if search_query:
-            confident, n = await self._retrieve_confident(search_query)
-            latency.observe(retrieved_chunks_count=n, confident_chunks_count=len(confident))
-            if not confident:
-                yield self._fallback_message
-                return
-            answer_start = time.perf_counter()
-            first = True
-            async for delta in self._llm.chat_stream(self._read_messages(question, confident)):
-                if first:
-                    latency.observe(llm_ttft_ms=(time.perf_counter() - answer_start) * 1000.0)
-                    first = False
+            async for delta in self._grounded_read_streaming(question, search_query):
                 yield delta
             return
+        # Tool-driven path, with the same fail-hard-on-function-calling fallback as answer().
+        # The tool call (which is what fails) happens before any delta is yielded, so a
+        # fallback here never double-streams; guard with `yielded` just in case.
+        yielded = False
+        try:
+            async for delta in self._answer_via_tools_streaming(question):
+                yielded = True
+                yield delta
+        except ProviderError as exc:
+            if yielded:
+                raise
+            log.warning("grounded tool calling failed (%s); retrieve-then-read fallback", exc)
+            async for delta in self._grounded_read_streaming(question, question):
+                yield delta
 
+    async def _answer_via_tools_streaming(self, question: str):
         messages = [Message(Role.SYSTEM, self._system_prompt), Message(Role.USER, question)]
         retrieved: list[ScoredChunk] = []
         n_retrieved = 0
