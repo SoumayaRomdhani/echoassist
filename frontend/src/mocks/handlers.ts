@@ -93,6 +93,8 @@ export const handlers = [
       domain?: string
       campaign?: string
       consent?: boolean
+      // Accepted for the tailored-interview flow; the canned mock stream ignores it.
+      job_posting_id?: number
     }
     const callId = newCallId()
     const domain = body.domain ?? SCREENING_DOMAIN.name
