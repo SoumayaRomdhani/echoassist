@@ -112,6 +112,16 @@ async def list_job_postings(session: AsyncSession) -> list[JobPosting]:
     return list(result)
 
 
+async def delete_job_posting(session: AsyncSession, job_id: int) -> bool:
+    """Delete a job posting. Returns False if it did not exist."""
+    posting = await session.get(JobPosting, job_id)
+    if posting is None:
+        return False
+    await session.delete(posting)
+    await session.commit()
+    return True
+
+
 async def update_job_posting(
     session: AsyncSession,
     job_id: int,

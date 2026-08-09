@@ -42,4 +42,13 @@ describe('job postings', () => {
   it('404s for an unknown posting', async () => {
     await expect(api.get('/job-postings/9999')).rejects.toMatchObject({ status: 404 })
   })
+
+  it('deletes a posting', async () => {
+    const created = await api.postJson<JobPostingOut>('/job-postings', {
+      title: 'Temp',
+      description: 'to delete',
+    })
+    await api.del<void>(`/job-postings/${created.id}`)
+    await expect(api.get(`/job-postings/${created.id}`)).rejects.toMatchObject({ status: 404 })
+  })
 })

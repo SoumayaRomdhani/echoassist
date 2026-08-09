@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { cn } from '@/lib/cn'
 import { ApiError } from '@/lib/api'
-import { useUpdateJobPosting } from '@/lib/query'
+import { useDeleteJobPosting, useUpdateJobPosting } from '@/lib/query'
 import type { JobPostingOut, Question } from '@/lib/types'
 
 /** A locally-editable question. `id`/`slot` are null for a freshly added one. */
@@ -30,11 +30,19 @@ function StatusBadge({ status }: { status: JobPostingOut['status'] }) {
  * then Save (keep editing) or Confirm (mark ready for a tailored interview).
  * Remounted per posting via a `key`, so local edit state starts clean on switch.
  */
-export function QuestionEditor({ posting }: { posting: JobPostingOut }) {
+export function QuestionEditor({
+  posting,
+  onDeleted,
+}: {
+  posting: JobPostingOut
+  onDeleted: () => void
+}) {
   const [title, setTitle] = useState(posting.title)
   const [questions, setQuestions] = useState<Draft[]>(posting.questions)
   const [status, setStatus] = useState(posting.status)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
   const update = useUpdateJobPosting(posting.id)
+  const remove = useDeleteJobPosting()
 
   const enabledCount = questions.filter((q) => q.enabled && q.text.trim()).length
 
@@ -48,6 +56,17 @@ export function QuestionEditor({ posting }: { posting: JobPostingOut }) {
 
   function addQuestion() {
     setQuestions((prev) => [...prev, { id: null, text: '', slot: null, enabled: true }])
+  }
+
+  async function handleDelete() {
+    try {
+      await remove.mutateAsync(posting.id)
+      toast.success('Job posting deleted')
+      onDeleted()
+    } catch (error) {
+      const message = error instanceof ApiError ? error.detail : 'Could not delete the posting.'
+      toast.error('Delete failed', { description: message })
+    }
   }
 
   async function save(nextStatus?: 'confirmed') {
@@ -132,19 +151,49 @@ export function QuestionEditor({ posting }: { posting: JobPostingOut }) {
         Add question
       </Button>
 
-      <div className="mt-6 flex items-center justify-end gap-2 border-t border-border pt-4">
-        <Button variant="outline" onClick={() => save()} disabled={update.isPending}>
-          {update.isPending ? <Loader2 className="animate-spin" /> : <Save />}
-          Save changes
-        </Button>
-        <Button
-          variant="brand"
-          onClick={() => save('confirmed')}
-          disabled={update.isPending || enabledCount === 0}
-        >
-          <CheckCircle2 />
-          Confirm &amp; ready
-        </Button>
+      <div className="mt-6 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4">
+        {confirmingDelete ? (
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted">Delete this posting?</span>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={handleDelete}
+              disabled={remove.isPending}
+            >
+              {remove.isPending ? <Loader2 className="animate-spin" /> : <Trash2 />}
+              Yes, delete
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setConfirmingDelete(false)}>
+              Cancel
+            </Button>
+          </div>
+        ) : (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setConfirmingDelete(true)}
+            className="text-[var(--c-accent-3)] hover:text-[var(--c-accent-3)]"
+          >
+            <Trash2 />
+            Delete
+          </Button>
+        )}
+
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => save()} disabled={update.isPending}>
+            {update.isPending ? <Loader2 className="animate-spin" /> : <Save />}
+            Save changes
+          </Button>
+          <Button
+            variant="brand"
+            onClick={() => save('confirmed')}
+            disabled={update.isPending || enabledCount === 0}
+          >
+            <CheckCircle2 />
+            Confirm &amp; ready
+          </Button>
+        </div>
       </div>
     </Card>
   )

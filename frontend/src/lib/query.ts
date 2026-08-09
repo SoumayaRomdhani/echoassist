@@ -155,6 +155,18 @@ export function useCreateJobPosting() {
   })
 }
 
+/** Delete a job posting. */
+export function useDeleteJobPosting() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => api.del<void>(`/job-postings/${id}`),
+    onSuccess: (_data, id) => {
+      queryClient.removeQueries({ queryKey: queryKeys.jobPosting(id) })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.jobPostings })
+    },
+  })
+}
+
 /** Save recruiter edits (curate questions / confirm the posting). */
 export function useUpdateJobPosting(id: number) {
   const queryClient = useQueryClient()

@@ -342,6 +342,13 @@ export function createJobPosting(args: {
   return posting
 }
 
+export function deleteJobPosting(id: number): boolean {
+  const index = db.jobPostings.findIndex((posting) => posting.id === id)
+  if (index < 0) return false
+  db.jobPostings.splice(index, 1)
+  return true
+}
+
 export function updateJobPosting(
   id: number,
   patch: { title?: string; questions?: Question[]; status?: JobPostingStatus },

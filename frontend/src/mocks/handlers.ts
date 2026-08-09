@@ -10,6 +10,7 @@ import {
   SCREENING_DOMAIN,
   createJobPosting,
   db,
+  deleteJobPosting,
   getCall,
   getJobPosting,
   listCalls,
@@ -127,6 +128,12 @@ export const handlers = [
   http.get('*/job-postings/:id', ({ params }) => {
     const posting = getJobPosting(Number(params.id))
     return posting ? HttpResponse.json(posting) : notFound(`job posting ${params.id} not found`)
+  }),
+  http.delete('*/job-postings/:id', ({ params }) => {
+    const ok = deleteJobPosting(Number(params.id))
+    return ok
+      ? new HttpResponse(null, { status: 204 })
+      : notFound(`job posting ${params.id} not found`)
   }),
   http.patch('*/job-postings/:id', async ({ request, params }) => {
     const body = (await request.json().catch(() => ({}))) as {

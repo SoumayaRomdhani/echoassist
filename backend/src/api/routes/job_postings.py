@@ -60,6 +60,16 @@ async def get_job_posting(
     return JobPostingOut.from_orm_model(posting)
 
 
+@router.delete("/{job_id}", status_code=204)
+async def delete_job_posting(
+    job_id: int, resources: AppResources = Depends(get_resources)
+) -> None:
+    async with resources.sessionmaker() as db:
+        deleted = await queries.delete_job_posting(db, job_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"job posting {job_id} not found")
+
+
 @router.patch("/{job_id}", response_model=JobPostingOut)
 async def update_job_posting(
     job_id: int, body: JobPostingUpdate, resources: AppResources = Depends(get_resources)

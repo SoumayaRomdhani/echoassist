@@ -101,6 +101,19 @@ async def test_patch_curates_and_confirms(jp_client) -> None:
 async def test_missing_posting_is_404(jp_client) -> None:
     assert (await jp_client.get("/job-postings/999")).status_code == 404
     assert (await jp_client.patch("/job-postings/999", json={"title": "x"})).status_code == 404
+    assert (await jp_client.delete("/job-postings/999")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_removes_the_posting(jp_client) -> None:
+    created = (await jp_client.post(
+        "/job-postings", json={"title": "SRE", "description": "K8s."}
+    )).json()
+
+    resp = await jp_client.delete(f"/job-postings/{created['id']}")
+    assert resp.status_code == 204
+    assert (await jp_client.get(f"/job-postings/{created['id']}")).status_code == 404
+    assert (await jp_client.get("/job-postings")).json() == []
 
 
 @pytest.mark.asyncio

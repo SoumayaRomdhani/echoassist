@@ -97,7 +97,7 @@ export function JobPostingsTab({ domain }: { domain: string }) {
                 onCancel={() => setCreating(false)}
               />
             ) : selectedId != null ? (
-              <SelectedPosting id={selectedId} />
+              <SelectedPosting id={selectedId} onDeleted={() => setSelectedId(null)} />
             ) : (
               <EmptyState
                 icon={FileText}
@@ -118,12 +118,12 @@ export function JobPostingsTab({ domain }: { domain: string }) {
   )
 }
 
-function SelectedPosting({ id }: { id: number }) {
+function SelectedPosting({ id, onDeleted }: { id: number; onDeleted: () => void }) {
   const { data, isLoading, isError } = useJobPosting(id)
   if (isLoading) return <Skeleton className="h-72 rounded-2xl" />
   if (isError || !data) return <PostingsError error={undefined} />
   // key -> remount on switch so QuestionEditor's local edit state resets cleanly.
-  return <QuestionEditor key={data.id} posting={data} />
+  return <QuestionEditor key={data.id} posting={data} onDeleted={onDeleted} />
 }
 
 function PostingsError({ error }: { error: unknown }) {
