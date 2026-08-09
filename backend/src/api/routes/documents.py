@@ -15,7 +15,10 @@ from src.api.schemas import (
     DocumentListOut,
     DocumentUploadOut,
     DomainReindexOut,
+    FullChunkOut,
     RetrievedChunkOut,
+    RetrieveIn,
+    RetrieveOut,
     SearchPreviewIn,
     SearchPreviewOut,
     SkippedDocumentOut,
@@ -80,6 +83,50 @@ async def search_preview(
                 page=r.chunk.metadata.get("page"),
                 heading=r.chunk.metadata.get("heading"),
                 snippet=r.chunk.text[:300],
+            )
+            for r in results
+        ],
+    )
+
+
+@router.post("/{domain}/retrieve", response_model=RetrieveOut)
+async def retrieve(
+    domain: str,
+    body: RetrieveIn,
+    resources: AppResources = Depends(get_resources),
+) -> RetrieveOut:
+    """Return the FULL chunks the domain retriever grounds on (not the 300-char preview).
+
+    This lets an out-of-process caller — the microphone's ``RemoteRetriever`` — reuse the
+    API's warm, resident RAG stack (``ProviderPool.retriever``) instead of loading its own
+    embedder + reranker (~30 s) on every launch. The response carries each chunk's complete
+    text + metadata + score, so grounding is byte-identical to a local retriever.
+    """
+    _require_domain(domain, resources)
+    query = body.query.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query must not be empty")
+
+    try:
+        results = await resources.ingest_service.search(domain, query, body.limit)
+    except Exception as exc:  # noqa: BLE001 - retrieval needs Qdrant/models; surface as 503
+        log.warning("retrieve failed for domain %s: %s", domain, exc)
+        raise HTTPException(
+            status_code=503, detail=f"retrieval failed (is Qdrant running?): {exc}"
+        ) from exc
+
+    return RetrieveOut(
+        domain=domain,
+        query=query,
+        results=[
+            FullChunkOut(
+                id=r.chunk.id,
+                source=r.chunk.source,
+                text=r.chunk.text,
+                ordinal=r.chunk.ordinal,
+                metadata=r.chunk.metadata,
+                score=r.score,
+                components=r.components,
             )
             for r in results
         ],

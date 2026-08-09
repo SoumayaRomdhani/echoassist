@@ -143,6 +143,10 @@ class Settings(BaseSettings):
     filler_phrases_fr: list[str] = _DEFAULT_FILLER_PHRASES_FR  # rotated for variety (French turns)
     domain: str = "screening"
 
+    # Base URL of a running EchoAssist API, used by run_live.py --remote-rag so the mic
+    # reuses the server's warm RAG stack over HTTP instead of loading its own models.
+    rag_service_url: str = "http://localhost:8000"
+
     # --- STT: faster-whisper ---
     whisper_model: str = "base"
     whisper_device: str = "auto"          # auto | cpu | cuda

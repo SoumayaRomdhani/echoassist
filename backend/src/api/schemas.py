@@ -290,6 +290,36 @@ class SearchPreviewOut(BaseModel):
     results: list[RetrievedChunkOut]
 
 
+class RetrieveIn(BaseModel):
+    query: str
+    # A high cap, not a top_k: the retriever already returns its own top_k, so this only
+    # guards against an unbounded response — it never truncates below what grounding uses.
+    limit: int = 32
+
+
+class FullChunkOut(BaseModel):
+    """A retrieved chunk with its FULL text + metadata — the exact input the agent grounds on.
+
+    Unlike ``RetrievedChunkOut`` (the dashboard's 300-char preview), this carries everything a
+    ``ScoredChunk`` holds, so an out-of-process caller (the mic's ``RemoteRetriever``) can
+    reconstruct it losslessly and get byte-identical grounding to a local retriever.
+    """
+
+    id: str
+    source: str
+    text: str
+    ordinal: int
+    metadata: dict = Field(default_factory=dict)
+    score: float
+    components: dict = Field(default_factory=dict)
+
+
+class RetrieveOut(BaseModel):
+    domain: str
+    query: str
+    results: list[FullChunkOut]
+
+
 # --- Health ---------------------------------------------------------------- #
 class HealthOut(BaseModel):
     status: str               # "ok" | "degraded"

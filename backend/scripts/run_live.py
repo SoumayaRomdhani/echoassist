@@ -88,6 +88,14 @@ def _parse_args() -> argparse.Namespace:
              "server up; the call appears under Calls and in the live banner. Terminal "
              "output is unchanged.",
     )
+    parser.add_argument(
+        "--remote-rag", action="store_true",
+        help="Reuse a running API server's WARM RAG stack over HTTP instead of loading the "
+             "embedder + reranker (~30 s) in this process. Removes the cold load — and the "
+             "post-disclosure CPU contention that made the first 'yes' hard to hear — from the "
+             "mic. Needs the API up (RAG_SERVICE_URL, default http://localhost:8000). "
+             "Interview mode only (a free conversation uses no RAG).",
+    )
     return parser.parse_args()
 
 
@@ -124,10 +132,21 @@ async def main() -> None:
 
     # A job posting only makes sense for the structured interview, so it implies --interview.
     interview = args.interview or args.job_posting_id is not None
+
+    # --remote-rag: skip loading this process's own embedder + reranker and reuse the API's
+    # warm, resident RAG stack over HTTP. The mic then starts instantly and the disclosure is
+    # no longer followed by a ~30 s local model load contending with the first "yes".
+    retriever = None
+    if args.remote_rag and interview:
+        from src.rag.remote import RemoteRetriever
+
+        retriever = RemoteRetriever(settings.rag_service_url, settings.domain)
+        print(bold("\nUsing the API's warm RAG stack.") + dim(f"  {settings.rag_service_url}"))
+
     try:
         await run_live_session(
             transport, settings, interview=interview, sink=sink, call_id=call_id,
-            job_posting_id=args.job_posting_id,
+            job_posting_id=args.job_posting_id, retriever=retriever,
         )
     finally:
         await transport.aclose()

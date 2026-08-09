@@ -69,9 +69,14 @@ services:
       LLM_PROVIDER: gemini
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       API_PORT: "8000"
+      # Persist the RAG model cache (FastEmbed embedder + reranker, ~1 GB) OUTSIDE the image,
+      # so it downloads once and survives rebuilds/restarts instead of re-fetching from HF.
+      FASTEMBED_CACHE_PATH: /app/model_cache
+      HF_HOME: /app/model_cache/hf
     volumes:
       # Persist uploaded documents across rebuilds (demo docs are seeded on first start).
       - docs_data:/app/data/docs
+      - model_cache:/app/model_cache
     ports:
       - "8000:8000"
 
@@ -99,8 +104,12 @@ services:
       LLM_PROVIDER: gemini
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       API_PORT: "8000"
+      # Same persistent model cache as `api` (adds Whisper's HF downloads via HF_HOME).
+      FASTEMBED_CACHE_PATH: /app/model_cache
+      HF_HOME: /app/model_cache/hf
     volumes:
       - docs_data:/app/data/docs
+      - model_cache:/app/model_cache
     ports:
       - "8001:8000"
 
@@ -109,3 +118,4 @@ volumes:
   redis_data:
   postgres_data:
   docs_data:
+  model_cache:
