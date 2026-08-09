@@ -106,6 +106,22 @@ retrieval_hints:
   folder: "account permissions, access request, shared folder, finance folder"
   charger: "hardware request, replacement charger, work laptop"
   admin: "security policy, admin password, privileged access, unsafe request"
+  # French triggers — the moment the caller speaks French, these map French wording to the
+  # same (English) procedures so retrieval keeps hitting the right document. English-named
+  # tech (vpn, wifi, outlook, teams) already matches above; these cover the French words.
+  "mot de passe": "password reset, locked account, self-service password reset"
+  "réinitialiser": "password reset, self-service password reset, locked account"
+  "verrouillé": "locked account, password reset, too many attempts"
+  "verrouille": "locked account, password reset, too many attempts"
+  "connexion": "sign-in, single sign-on, authentication failed, VPN, password"
+  "lent": "slow laptop, performance troubleshooting, restart, disk space, CPU, memory, background apps"
+  "ordinateur": "slow laptop, unresponsive computer, restart, disk space, Task Manager"
+  "réseau": "Wi-Fi troubleshooting, wireless network, connectivity, outage"
+  "accès": "account permissions, access request, shared folder, finance folder"
+  "dossier": "account permissions, access request, shared folder, finance folder"
+  "messagerie": "email access, Outlook, mailbox connection"
+  "courriel": "email access, Outlook, mailbox connection"
+  "matériel": "hardware request, replacement, work laptop, charger"
 
 # Ordered states (read by agent/dialogue.py).
 #   type: grounded_qa -> caller-led turn: classify, then answer substantive issues via RAG,
