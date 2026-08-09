@@ -138,20 +138,39 @@ class QuestionGenerator:
             response = await self._llm.chat(
                 [Message(Role.SYSTEM, _SYSTEM), Message(Role.USER, user)], tools=[self._tool]
             )
+            raw = self._extract_raw(response)
         except ProviderError as exc:
-            # Some OpenAI-compatible models fail hard on function calling — fall back to JSON.
+            # Some models fail hard on function calling — fall back to plain JSON.
             log.warning("question tool call failed (%s); retrying as plain JSON", exc)
-            response = await self._llm.chat(
-                [Message(Role.SYSTEM, _JSON_FALLBACK_SYSTEM), Message(Role.USER, user)]
-            )
+            raw = await self._generate_via_json(user)
 
-        if response.tool_calls:
-            raw = _questions_from_tool_calls(response.tool_calls)
-        else:  # model answered with text instead of calling the tool
-            raw = (extract_json(response.text) or {}).get("questions", [])
-
-        if not isinstance(raw, list):
-            raw = []
         questions = normalize_questions(raw, max_questions=max_questions)
+        if not questions:
+            # The tool path produced nothing usable. Gemini in particular can emit an EMPTY
+            # function call — which is NOT an error, so provider failover never triggers and
+            # the caller silently gets zero questions. Retry once via plain JSON (reliable
+            # across providers) before giving up.
+            log.info("no questions from the tool path; retrying via plain JSON")
+            questions = normalize_questions(
+                await self._generate_via_json(user), max_questions=max_questions
+            )
         log.info("generated %d screening question(s)", len(questions))
         return questions
+
+    @staticmethod
+    def _extract_raw(response) -> list:
+        """Pull the raw question list from a tool call or a JSON text answer."""
+        raw = (
+            _questions_from_tool_calls(response.tool_calls)
+            if response.tool_calls
+            else (extract_json(response.text) or {}).get("questions", [])
+        )
+        return raw if isinstance(raw, list) else []
+
+    async def _generate_via_json(self, user: str) -> list:
+        """Plain-JSON generation (no tools) — the reliable, provider-agnostic path."""
+        response = await self._llm.chat(
+            [Message(Role.SYSTEM, _JSON_FALLBACK_SYSTEM), Message(Role.USER, user)]
+        )
+        raw = (extract_json(response.text) or {}).get("questions", [])
+        return raw if isinstance(raw, list) else []

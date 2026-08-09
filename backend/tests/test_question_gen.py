@@ -97,6 +97,27 @@ class FlattenedToolCallsLLM(LLMProvider):
         return LLMResponse(text="", tool_calls=calls)
 
 
+class EmptyToolThenJsonLLM(LLMProvider):
+    """Gemini-like: an EMPTY tool response (no error, no call), then valid JSON without tools."""
+
+    def __init__(self, payload: str) -> None:
+        self._payload = payload
+
+    async def chat(self, messages, tools=None) -> LLMResponse:
+        if tools is not None:
+            return LLMResponse(text="", tool_calls=[])  # the Gemini failure mode
+        return LLMResponse(text=self._payload)
+
+
+@pytest.mark.asyncio
+async def test_generate_retries_via_json_when_tool_path_is_empty() -> None:
+    # Reproduces the live bug: Gemini emits an empty function call (not an error, so failover
+    # never fires) -> 0 questions. The JSON retry must recover them.
+    payload = '{"questions": ["Years in cloud security?", "AWS IAM experience?"]}'
+    out = await QuestionGenerator(EmptyToolThenJsonLLM(payload)).generate("Cloud Security role")
+    assert [q["text"] for q in out] == ["Years in cloud security?", "AWS IAM experience?"]
+
+
 @pytest.mark.asyncio
 async def test_generate_handles_flattened_tool_calls() -> None:
     # No "questions" key + one call per item — must still yield both questions, not [].
