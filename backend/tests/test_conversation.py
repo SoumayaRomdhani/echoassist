@@ -13,6 +13,7 @@ from src.agent.conversation import ConversationAgent
 from src.agent.dialogue import DialogueManager
 from src.agent.domain import DomainConfig
 from src.agent.state import ConversationState, InMemoryStateStore
+from src.providers.errors import ProviderError
 from src.providers.llm.base import LLMProvider
 from src.providers.types import LLMResponse, Message, Role, ToolCall
 from src.rag.types import Chunk, ScoredChunk
@@ -57,6 +58,44 @@ def _agent(llm, retriever, **kw) -> ConversationAgent:
 
 def _chunk(source: str) -> ScoredChunk:
     return ScoredChunk(Chunk(f"{source}#0", source, "some passage", 0), 2.0)
+
+
+class ToolFailsThenAnswersLLM(LLMProvider):
+    """Fails when the search tool is offered (Groq tool_use_failed), answers plainly otherwise."""
+
+    def __init__(self, answer: str) -> None:
+        self._answer = answer
+        self.tools_offered: list[bool] = []
+
+    async def chat(self, messages, tools=None) -> LLMResponse:
+        self.tools_offered.append(tools is not None)
+        if tools is not None:
+            raise ProviderError("tool_use_failed")
+        return LLMResponse(text=self._answer)
+
+    async def chat_stream(self, messages, tools=None):
+        yield self._answer
+
+
+@pytest.mark.asyncio
+async def test_respond_falls_back_when_tool_calling_fails() -> None:
+    # The live crash: Groq returns tool_use_failed on the search-tool decision call.
+    llm = ToolFailsThenAnswersLLM("Let's try re-typing your password.")
+    reply = await _agent(llm, FakeRetriever([])).respond(
+        _state(("user", "still failing, what next?"))
+    )
+    assert reply.text == "Let's try re-typing your password."   # answered, did not crash
+    assert llm.tools_offered == [True, False]                   # tried tools, then plain fallback
+
+
+@pytest.mark.asyncio
+async def test_begin_stream_falls_back_when_tool_calling_fails() -> None:
+    llm = ToolFailsThenAnswersLLM("Let me have a colleague follow up on that.")
+    used_rag, stream = await _agent(llm, FakeRetriever([])).begin_stream(
+        _state(("user", "can I get the admin password?"))
+    )
+    assert used_rag is False
+    assert "".join([d async for d in stream]) == "Let me have a colleague follow up on that."
 
 
 # --------------------------------------------------------------------------- #

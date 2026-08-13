@@ -180,15 +180,22 @@ class GeminiLLM(LLMProvider):
     async def chat_stream(
         self, messages: list[Message], tools: list[ToolSpec] | None = None
     ) -> AsyncIterator[str]:
+        from google.genai import errors as genai_errors
         from google.genai import types
 
         system_instruction, contents = _build_contents(messages, types)
         with span("llm.chat_stream", **{"llm.provider": "gemini", "llm.model": self._model}):
-            stream = await self._client.aio.models.generate_content_stream(
-                model=self._model,
-                contents=contents,
-                config=self._config(types, system_instruction, tools),
-            )
-            async for chunk in stream:
-                if chunk.text:
-                    yield chunk.text
+            # Wrap SDK errors as ProviderError — like chat() — so FailoverLLM can fail over on a
+            # streamed turn too (e.g. Gemini 429 quota mid-interview). The error surfaces on the
+            # first pull, before any delta, so the switch to the fallback is transparent.
+            try:
+                stream = await self._client.aio.models.generate_content_stream(
+                    model=self._model,
+                    contents=contents,
+                    config=self._config(types, system_instruction, tools),
+                )
+                async for chunk in stream:
+                    if chunk.text:
+                        yield chunk.text
+            except genai_errors.APIError as exc:
+                raise _to_provider_error(exc) from exc

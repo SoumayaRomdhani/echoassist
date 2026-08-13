@@ -283,14 +283,15 @@ async def _record_consent(
         await engine.dispose()
 
 
-async def _tailored_domain(
-    settings: Settings, base: DomainConfig, job_posting_id: int
-) -> DomainConfig:
-    """Overlay a confirmed job posting's questions onto the base flow (JD-based interview).
+async def _tailored_setup(
+    settings: Settings, job_posting_id: int
+) -> tuple[Settings, DomainConfig]:
+    """Load a confirmed job posting and build ``(settings, domain)`` for a JD interview.
 
-    The same builder the API runner uses (``with_question_flow``): each enabled question
-    becomes a question state, everything else (disclosure, consent, grounded_qa, close) is
-    inherited. Raises ``ValueError`` if the posting is missing or has no enabled questions.
+    Uses the posting's OWN domain as the base (via ``with_question_flow``), so the tailored
+    interview is independent of the ``.env`` DOMAIN — the flow, notes schema, and finalize all
+    run under the posting's domain, not helpdesk. Raises ``ValueError`` if the posting is
+    missing or has no enabled questions.
     """
     from src.storage.queries import get_job_posting
 
@@ -303,12 +304,14 @@ async def _tailored_domain(
         await engine.dispose()
     if posting is None:
         raise ValueError(f"job posting {job_posting_id} not found")
+    settings = settings.model_copy(update={"domain": posting.domain})
+    base = load_domain_config(posting.domain, settings.config_dir)
     domain = with_question_flow(base, posting.questions)
     log.info(
-        "tailored interview from job posting %d (%d question states)",
-        job_posting_id, _question_total(domain),
+        "tailored interview from job posting %d (domain=%s, %d question states)",
+        job_posting_id, posting.domain, _question_total(domain),
     )
-    return domain
+    return settings, domain
 
 
 async def _disclosure_audio(
@@ -701,11 +704,12 @@ async def run_live_session(
     )
 
     t0 = time.monotonic()
-    domain = load_domain_config(settings.domain, settings.config_dir)
-    # JD-based interview: overlay the confirmed job posting's questions onto the flow, so
-    # the live mic/LiveKit call asks the tailored questions instead of the static YAML ones.
+    # JD-based interview: run under the posting's OWN domain with its confirmed questions,
+    # regardless of the .env DOMAIN. Otherwise use the configured domain's static flow.
     if job_posting_id is not None:
-        domain = await _tailored_domain(settings, domain, job_posting_id)
+        settings, domain = await _tailored_setup(settings, job_posting_id)
+    else:
+        domain = load_domain_config(settings.domain, settings.config_dir)
     call_id = call_id or uuid.uuid4().hex
 
     # Teardown handles initialised BEFORE the try so the `finally` is safe even if a build

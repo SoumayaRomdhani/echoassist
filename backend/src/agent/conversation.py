@@ -29,6 +29,7 @@ from src.agent.grounding import SEARCH_TOOL, Citation, build_citations, strip_ci
 from src.agent.guardrails import is_grounded, refusal_message
 from src.agent.state import ConversationState
 from src.observability import latency
+from src.providers.errors import ProviderError
 from src.providers.llm.base import LLMProvider
 from src.providers.types import Message, Role
 from src.rag.retriever import Retriever
@@ -131,6 +132,19 @@ class ConversationAgent:
             (t["text"] for t in reversed(state.transcript) if t.get("role") == "user"), ""
         )
 
+    async def _decide(self, messages: list[Message]):
+        """Ask the model (with the search tool) what to do this turn.
+
+        Some providers/models fail hard on function calling (e.g. Groq ``tool_use_failed``).
+        Fall back to a plain no-tools answer so the call never crashes — the agent then
+        replies from the conversation (its prompt tells it to offer escalation when unsure).
+        """
+        try:
+            return await self._llm.chat(messages, tools=[SEARCH_TOOL])
+        except ProviderError as exc:
+            log.warning("agent tool decision failed (%s); answering without tools", exc)
+            return await self._llm.chat(messages)
+
     async def _search(self, query: str) -> list[ScoredChunk]:
         chunks = await asyncio.to_thread(self._retriever.retrieve, query)
         confident = [c for c in chunks if is_grounded(c.score, self._min_confidence)]
@@ -160,7 +174,7 @@ class ConversationAgent:
         messages = self._messages(state, state_note)
         last_user = self._last_user(state)
         with latency.span("llm_total_ms"):
-            response = await self._llm.chat(messages, tools=[SEARCH_TOOL])
+            response = await self._decide(messages)
         if not response.tool_calls:  # answered from the conversation — no retrieval
             return AgentReply(text=strip_citations(response.text) or self._fallback, used_rag=False)
 
@@ -188,7 +202,7 @@ class ConversationAgent:
         messages = self._messages(state, state_note)
         last_user = self._last_user(state)
         with latency.span("llm_total_ms"):
-            response = await self._llm.chat(messages, tools=[SEARCH_TOOL])
+            response = await self._decide(messages)
         if not response.tool_calls:  # direct answer (follow-up / memory / off-topic / repair)
             return False, self._yield_text(response.text or self._fallback)
 
