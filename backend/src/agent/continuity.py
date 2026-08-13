@@ -162,12 +162,26 @@ def indicates_resolution(text: str) -> bool:
     return bool(_RESOLVED_RE.search(text or ""))
 
 
-# The caller signals the call can wrap up (resolved / no more / goodbye).
+# The caller signals the call can wrap up (resolved / no more / goodbye / hang up), in EN or FR.
+# The agent switches to the caller's language mid-call, so the closing cues must be bilingual —
+# an English-only pattern silently ignored "Merci. Au revoir." and left the call in `listening`.
+# This is the fast, deterministic layer; the conversational agent also emits an LLM end signal
+# (see `has_end_marker`) for paraphrases and garbled STT this keyword pass cannot catch.
 _CLOSING_RE = re.compile(
-    r"\b(?:that'?s all|that'?s it|nothing else|no more|no thank you|no thanks"
-    r"|i'?m (?:good|done|all set|fine now)|all set|we'?re done|goodbye|bye now|hang up"
+    r"\b(?:"
+    # --- English ---
+    r"that'?s all|that'?s it|that'?s everything|that (?:will|'?ll) be all"
+    r"|nothing else|no more|no thank you|no thanks"
+    r"|i'?m (?:good|done|all set|fine now)|all set|we'?re (?:all )?(?:done|set|good)"
+    r"|goodbye|bye now|hang up|(?:finish|end|stop)(?: (?:the|this))? call|end call"
     r"|i (?:solved|resolved|fixed) (?:it|my (?:problem|issue))"
-    r"|(?:problem|issue|it) (?:is )?(?:solved|resolved|fixed|working now))\b",
+    r"|(?:problem|issue|it) (?:is )?(?:solved|resolved|fixed|working now)"
+    # --- French ---
+    r"|au revoir|c'?est tout|c'?est termin[ée]e?|rien d'?autre|non merci"
+    r"|j'?ai (?:fini|termin[ée]e?)|je n'?ai (?:plus rien|rien d'?autre)"
+    r"|(?:termin(?:ez|er)|fin de|arr[êe]t(?:ez|er)) (?:l'?)?appel"
+    r"|raccroch(?:ez|er|e)|c'?est (?:r[ée]gl[ée]|r[ée]solu)"
+    r")\b",
     re.I,
 )
 
@@ -177,6 +191,24 @@ def is_closing(text: str) -> bool:
     reporting a failure — so "no, that didn't work" never ends the call by accident."""
     t = text or ""
     return bool(_CLOSING_RE.search(t)) and not indicates_failure(t)
+
+
+# Sentinel the conversational agent appends when it judges — in ANY language, and even from a
+# paraphrase the keyword pass above would miss — that the caller wants to end the call (see the
+# "Ending the call" rule in src/agent/conversation.py). Angle brackets so `strip_citations`
+# (which only removes ``[...]``) leaves it intact; stripped before TTS and the saved transcript.
+END_CALL_MARKER = "<<END_CALL>>"
+_END_CALL_RE = re.compile(re.escape(END_CALL_MARKER), re.I)
+
+
+def has_end_marker(text: str) -> bool:
+    """True when the agent's reply carries the end-of-call sentinel."""
+    return bool(_END_CALL_RE.search(text or ""))
+
+
+def strip_end_marker(text: str) -> str:
+    """Remove the end-of-call sentinel (and surrounding whitespace) so it never reaches TTS."""
+    return _END_CALL_RE.sub("", text or "").strip()
 
 
 def _load_hints(raw: object) -> list[tuple[str, str]]:

@@ -9,6 +9,12 @@ from __future__ import annotations
 
 import pytest
 
+from src.agent.continuity import (
+    END_CALL_MARKER,
+    has_end_marker,
+    is_closing,
+    strip_end_marker,
+)
 from src.agent.conversation import ConversationAgent
 from src.agent.dialogue import DialogueManager
 from src.agent.domain import DomainConfig
@@ -297,3 +303,85 @@ async def test_dialogue_agent_closing_advances_to_close_without_an_llm_call() ->
     assert mgr.finished is True
     assert turn.text == "Glad I could help. Bye!"
     assert llm.calls == 0
+
+
+# --------------------------------------------------------------------------- #
+# End-of-call detection: bilingual keyword fast-path + LLM sentinel           #
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "utterance",
+    [
+        # English — including the commands the old pattern missed.
+        "that's all, thanks",
+        "no thanks, goodbye",
+        "you can finish the call",
+        "please end the call now",
+        "ok stop the call",
+        # French — the agent switches to FR mid-call, so these must close too.
+        "merci, au revoir",
+        "c'est tout pour moi",
+        "non merci, j'ai fini",
+        "vous pouvez raccrocher",
+        "terminez l'appel s'il vous plaît",
+        "parfait, c'est réglé",
+    ],
+)
+def test_is_closing_matches_english_and_french_closings(utterance: str) -> None:
+    assert is_closing(utterance) is True
+
+
+@pytest.mark.parametrize(
+    "utterance",
+    [
+        "no, that didn't work",          # a failure report must never end the call
+        "it's still not working",
+        "can you help me with something", # mid-conversation, not a closing
+        "what's the next step",
+    ],
+)
+def test_is_closing_ignores_failures_and_ongoing_turns(utterance: str) -> None:
+    assert is_closing(utterance) is False
+
+
+def test_end_marker_helpers_detect_and_strip() -> None:
+    assert has_end_marker(f"Au revoir, bonne journée. {END_CALL_MARKER}") is True
+    assert has_end_marker("just a normal reply") is False
+    assert strip_end_marker(f"Bye now. {END_CALL_MARKER}") == "Bye now."
+
+
+@pytest.mark.asyncio
+async def test_respond_flags_end_and_strips_the_marker() -> None:
+    # A closing the keyword pass misses ("thanks for the help") — the model reads it as done.
+    llm = ScriptedLLM([LLMResponse(text=f"Glad I could help — take care! {END_CALL_MARKER}")])
+    reply = await _agent(llm, FakeRetriever([])).respond(_state(("user", "thanks for the help")))
+
+    assert reply.end is True
+    assert END_CALL_MARKER not in reply.text          # the caller never hears the sentinel
+    assert reply.text == "Glad I could help — take care!"
+
+
+@pytest.mark.asyncio
+async def test_dialogue_agent_ends_on_the_llm_marker() -> None:
+    # The caller phrasing the regex can't catch; the model appends the sentinel to end the call.
+    llm = ScriptedLLM([LLMResponse(text=f"Avec plaisir, bonne journée ! {END_CALL_MARKER}")])
+    mgr = _manager(_agent(llm, FakeRetriever([])))
+
+    turn = await mgr.handle_turn("ok merci beaucoup pour ton aide")
+
+    assert turn.ended is True
+    assert mgr.finished is True
+    assert END_CALL_MARKER not in turn.text
+    assert "bonne journée" in turn.text
+
+
+@pytest.mark.asyncio
+async def test_dialogue_agent_streaming_ends_on_the_llm_marker() -> None:
+    llm = ScriptedLLM([LLMResponse(text=f"Parfait, au revoir ! {END_CALL_MARKER}")])
+    mgr = _manager(_agent(llm, FakeRetriever([])))
+
+    _used_rag, stream = await mgr.begin_streaming_turn("c'est gentil, on a terminé je pense")
+    _ = "".join([d async for d in stream])            # drain (downstream clean strips the marker)
+
+    assert mgr.finished is True
+    # recorded turn is clean (strip_citations also tidies the space before "!")
+    assert mgr.state.transcript[-1]["text"] == "Parfait, au revoir!"

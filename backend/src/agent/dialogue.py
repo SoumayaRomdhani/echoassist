@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
-from src.agent.continuity import ContinuityTracker, is_closing
+from src.agent.continuity import ContinuityTracker, has_end_marker, is_closing, strip_end_marker
 from src.agent.conversation import ConversationAgent
 from src.agent.domain import DomainConfig
 from src.agent.grounding import Citation, GroundedResponder, strip_citations
@@ -350,10 +350,12 @@ class DialogueManager:
         text = reply.text or self._fallback
         self._continuity.record_assistant(self._state, text, reply.citations)
         self._state.add_turn("assistant", text)
+        if reply.end:  # the model judged the caller is done — end after this farewell
+            self._state.state_index = len(self._states)
         await self._store.save(self._state)
         latency.observe(is_rag=reply.used_rag)
         return DialogueTurn(
-            text=text, ended=False, citations=reply.citations, details=reply.details
+            text=text, ended=reply.end, citations=reply.citations, details=reply.details
         )
 
     async def _agent_stream(self, transcript: str) -> tuple[bool, AsyncIterator[str]]:
@@ -378,10 +380,12 @@ class DialogueManager:
         raw = ""
         async for delta in raw_stream:
             raw += delta
-            yield delta
-        spoken = strip_citations(raw)
+            yield delta  # the <<END_CALL>> marker (if any) is stripped downstream before TTS
+        spoken = strip_end_marker(strip_citations(raw))
         self._continuity.record_assistant(self._state, spoken, _sources_in(raw))
         self._state.add_turn("assistant", spoken)
+        if has_end_marker(raw):  # the model judged the caller is done — end after this farewell
+            self._state.state_index = len(self._states)
         await self._store.save(self._state)
 
     async def _stream_plan(self, plan: _Reply) -> AsyncIterator[str]:

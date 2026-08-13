@@ -25,6 +25,7 @@ import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
+from src.agent.continuity import has_end_marker, strip_end_marker
 from src.agent.grounding import SEARCH_TOOL, Citation, build_citations, strip_citations
 from src.agent.guardrails import is_grounded, refusal_message
 from src.agent.state import ConversationState
@@ -73,7 +74,13 @@ _AGENT_BEHAVIOR = (
     "in the passages, say you do not have that specific information and offer to escalate or have "
     "a human follow up — never invent. Never expose your inner workings to the caller: do not say "
     "\"knowledge base\", \"the passages\", \"the tool\", \"search\", or \"my documents\" — just "
-    "speak naturally as a support agent would."
+    "speak naturally as a support agent would.\n"
+    "Ending the call: when the caller clearly signals they are finished — the issue is resolved, "
+    "they have nothing else, they thank you and say goodbye, or they explicitly ask to finish, "
+    "end, stop, or hang up the call — in ANY language, reply with ONE short, warm farewell in the "
+    "caller's language and then append the exact token <<END_CALL>> at the very end (the caller "
+    "never hears it; it just tells the system to hang up). Append it ONLY when they are clearly "
+    "done — if they might still need help, keep helping and do NOT append it."
 )
 
 
@@ -86,6 +93,7 @@ class AgentReply:
     used_rag: bool = False
     retrieved: list[ScoredChunk] = field(default_factory=list)
     details: list[Citation] = field(default_factory=list)  # per-source page/heading provenance
+    end: bool = False                                  # model judged the caller wants to hang up
 
 
 class ConversationAgent:
@@ -176,18 +184,25 @@ class ConversationAgent:
         with latency.span("llm_total_ms"):
             response = await self._decide(messages)
         if not response.tool_calls:  # answered from the conversation — no retrieval
-            return AgentReply(text=strip_citations(response.text) or self._fallback, used_rag=False)
+            raw = response.text or ""
+            return AgentReply(
+                text=strip_end_marker(strip_citations(raw)) or self._fallback,
+                used_rag=False,
+                end=has_end_marker(raw),
+            )
 
         retrieved = await self._run_tools(messages, response, last_user)
         with latency.span("llm_total_ms"):
             final = await self._llm.chat(messages)
-        details = build_citations(final.text, retrieved)
+        raw = final.text or ""
+        details = build_citations(raw, retrieved)
         return AgentReply(
-            text=strip_citations(final.text) or self._fallback,
+            text=strip_end_marker(strip_citations(raw)) or self._fallback,
             citations=[c.source for c in details],
             used_rag=True,
             retrieved=retrieved,
             details=details,
+            end=has_end_marker(raw),
         )
 
     async def begin_stream(

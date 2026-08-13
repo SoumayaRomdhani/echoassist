@@ -215,6 +215,7 @@ def _agent_text_emitter(sink: CallEventSink, *, min_interval_s: float = 0.08):
     throttled so a fast token stream doesn't flood the bus. The final ``transcript`` turn
     supersedes the partial on the UI side.
     """
+    from src.agent.continuity import strip_end_marker
     from src.agent.grounding import strip_citations
 
     acc = ""
@@ -232,7 +233,7 @@ def _agent_text_emitter(sink: CallEventSink, *, min_interval_s: float = 0.08):
         now = time.monotonic()
         if now - last_emit < min_interval_s:
             return
-        text = strip_citations(acc).strip()
+        text = strip_end_marker(strip_citations(acc)).strip()
         if text and text != last_text:
             last_text = text
             last_emit = now

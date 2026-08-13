@@ -246,8 +246,12 @@ class VoicePipeline:
         reply deltas as the LLM generates them, for a live "typewriter" transcript. Both fire
         while the returned audio stream is consumed.
         """
+        from src.agent.continuity import strip_end_marker
         from src.agent.grounding import strip_citations
         from src.agent.streaming import synthesize_streaming
+
+        def _clean(text: str) -> str:  # strip [source] citations AND the <<END_CALL>> sentinel
+            return strip_end_marker(strip_citations(text))
 
         self._require_interview_ready()
         with latency.span("stt_ms"):
@@ -257,7 +261,7 @@ class VoicePipeline:
         is_rag, text_stream = await self._dialogue.begin_streaming_turn(transcript.text)
         # tts timing + the first-audio event are recorded inside synthesize_streaming.
         audio_stream = synthesize_streaming(
-            text_stream, self._tts, clean=strip_citations,
+            text_stream, self._tts, clean=_clean,
             coalesce_sentences=self._stream_coalesce, policy=self._chunk_policy,
             on_text=on_agent_text,
         )
