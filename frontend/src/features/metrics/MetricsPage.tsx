@@ -2,7 +2,6 @@ import {
   BarChart3,
   CheckCircle2,
   FileText,
-  Info,
   ShieldCheck,
   type LucideIcon,
 } from 'lucide-react'
