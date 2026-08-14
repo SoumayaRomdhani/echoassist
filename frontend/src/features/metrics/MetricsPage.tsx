@@ -90,15 +90,7 @@ export function MetricsPage({ domain }: { domain: string }) {
         )}
       </Card>
 
-      <Card className="flex items-start gap-3 p-5">
-        <Info className="mt-0.5 size-4 shrink-0 text-accent" />
-        <p className="text-sm leading-relaxed text-muted">
-          Operational outcomes are shown here. Quality benchmarks — turn latency p50/p95, STT WER,
-          retrieval Recall@K / nDCG, note accuracy, and summary faithfulness — are produced by the
-          reproducible benchmark report (the second half of the Sprint 7 DoD), run from the backend{' '}
-          <code className="rounded bg-foreground/[0.06] px-1 py-0.5 text-xs">eval/</code> suite.
-        </p>
-      </Card>
+      
     </div>
   )
 }
